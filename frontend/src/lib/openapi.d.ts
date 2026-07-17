@@ -389,7 +389,7 @@ export interface components {
             prioritize_samples: boolean;
             /**
              * Sample Intensity
-             * @default 0.6
+             * @default 0.9
              */
             sample_intensity: number;
             /**
@@ -397,6 +397,12 @@ export interface components {
              * @default false
              */
             allow_compilations: boolean;
+            /**
+             * Profile
+             * @default boom_bap
+             * @enum {string}
+             */
+            profile: "boom_bap" | "lofi" | "global" | "cinematic";
             /**
              * Count
              * @default 8
@@ -559,6 +565,17 @@ export interface components {
             youtube_duration_seconds?: number | null;
             /** Match Score */
             match_score?: number | null;
+            /**
+             * Sample Score
+             * @default 1
+             */
+            sample_score: number;
+            /** Sample Reasons */
+            sample_reasons?: string[];
+            /** Artwork Url */
+            artwork_url?: string | null;
+            /** Discogs Url */
+            discogs_url?: string | null;
             /**
              * Sample Friendly
              * @default true

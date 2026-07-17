@@ -52,6 +52,10 @@ export interface Suggestion {
   youtube_title: string | null
   youtube_duration_seconds: number | null
   match_score: number | null
+  sample_score: number
+  sample_reasons: string[]
+  artwork_url: string | null
+  discogs_url: string | null
   sample_friendly: boolean
   demo: boolean
 }
@@ -92,4 +96,3 @@ export interface QueueEvent {
   error_message?: string
   track_id?: number
 }
-

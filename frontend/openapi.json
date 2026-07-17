@@ -3,7 +3,7 @@
   "info": {
     "title": "Crate Digger API",
     "description": "Loopback API for the Crate Digger desktop web interface.",
-    "version": "0.1.1"
+    "version": "0.2.1"
   },
   "paths": {
     "/api/health": {
@@ -2285,12 +2285,23 @@
             "maximum": 1.0,
             "minimum": 0.0,
             "title": "Sample Intensity",
-            "default": 0.6
+            "default": 0.9
           },
           "allow_compilations": {
             "type": "boolean",
             "title": "Allow Compilations",
             "default": false
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "boom_bap",
+              "lofi",
+              "global",
+              "cinematic"
+            ],
+            "title": "Profile",
+            "default": "boom_bap"
           },
           "count": {
             "type": "integer",
@@ -2822,6 +2833,40 @@
               }
             ],
             "title": "Match Score"
+          },
+          "sample_score": {
+            "type": "number",
+            "title": "Sample Score",
+            "default": 1.0
+          },
+          "sample_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sample Reasons"
+          },
+          "artwork_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artwork Url"
+          },
+          "discogs_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discogs Url"
           },
           "sample_friendly": {
             "type": "boolean",

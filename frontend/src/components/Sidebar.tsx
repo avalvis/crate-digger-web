@@ -32,7 +32,7 @@ export function Sidebar({ jobs, onQueue }: { jobs: QueueJob[]; onQueue: () => vo
           <small>{active ? `${Math.round(active.progress_pct)}% · ${active.current_stage || 'Preparing'}` : 'Drop in a track and start digging'}</small>
         </div>
       </button>
-      <div className="sidebar__version">v0.1.1 WEB</div>
+      <div className="sidebar__version">v0.2.1 WEB</div>
     </aside>
   )
 }

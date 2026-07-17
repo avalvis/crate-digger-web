@@ -132,7 +132,13 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "tauri://localhost", "https://tauri.localhost"],
+        allow_origins=[
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "tauri://localhost",
+        ],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -173,13 +179,12 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
 
     @app.put("/api/config/secrets/discogs", response_model=ConfigResponse)
     def set_discogs(payload: SecretPatch, _: Guard, core: Runtime) -> ConfigResponse:
-        core.config.set_discogs_token(payload.value)
-        core._discovery = None
+        core.set_discogs_token(payload.value)
         return ConfigResponse(**core.config_payload())
 
     @app.put("/api/config/secrets/deepseek", response_model=ConfigResponse)
     def set_deepseek(payload: SecretPatch, _: Guard, core: Runtime) -> ConfigResponse:
-        core.config.set_deepseek_key(payload.value)
+        core.set_deepseek_key(payload.value)
         return ConfigResponse(**core.config_payload())
 
     @app.get("/api/tracks", response_model=TrackPage)

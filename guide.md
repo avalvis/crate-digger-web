@@ -211,7 +211,7 @@ npm --prefix .\frontend run build
 ### Check the Rust shell
 
 ```powershell
-cargo check --manifest-path .\src-tauri\Cargo.toml
+npm --prefix .\frontend run desktop:check
 ```
 
 ### Run Playwright end-to-end tests
@@ -274,7 +274,7 @@ Also update version assertions or generated API metadata when applicable.
 .\.venv\Scripts\python.exe -m pytest -q
 npm --prefix .\frontend test -- --run
 npm --prefix .\frontend run build
-cargo check --manifest-path .\src-tauri\Cargo.toml
+npm --prefix .\frontend run desktop:check
 ```
 
 ### 3. Rebuild the Python sidecar
@@ -330,9 +330,12 @@ Rebuild the sidecar after changing Python dependencies.
 
 ## API contract generation
 
-FastAPI produces an OpenAPI description of the backend. The frontend's generated TypeScript API types can be refreshed after updating `frontend/openapi.json`:
+FastAPI produces an OpenAPI description of the backend. After changing an API request or response model, regenerate both the schema and the frontend TypeScript types:
 
 ```powershell
+Push-Location .\backend
+..\.venv\Scripts\python.exe -m cratedigger_api.openapi
+Pop-Location
 npm --prefix .\frontend run api:generate
 ```
 
@@ -375,6 +378,20 @@ Run the commands in this order:
 .\scripts\build-sidecar.ps1
 npm --prefix .\frontend run desktop:build
 ```
+
+### Digital Crate returns an error or weak matches
+
+The default Digital Crate is intentionally producer-focused. Leave Genre override on **Let the lens choose**, choose a producer lens, and use **Dig for gems** to explore a fresh portfolio. Explicit genre filters are respected even when they are outside the recommended sample-source lanes.
+
+Live discovery uses the Discogs token. YouTube Music supplies the playable match. The DeepSeek key is optional and is currently used to clean metadata during the download pipeline; it is not required to dig or preview records.
+
+The web app writes detailed diagnostics to:
+
+```text
+%LOCALAPPDATA%\CrateDigger\cratedigger-web.log
+```
+
+The older `cratedigger.log` belongs to the previous Tkinter application and may contain stale errors.
 
 ### Port already in use
 

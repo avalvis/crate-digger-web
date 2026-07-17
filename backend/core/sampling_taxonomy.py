@@ -27,6 +27,7 @@ pure scoring helper: give it genres/styles/country/year, get a float.
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Iterable, Optional
 
@@ -39,7 +40,7 @@ _TIER_STRONG = 1.45    # deep-dig staples
 _TIER_GOOD = 1.2       # frequently flipped
 _TIER_NEUTRAL = 1.0    # no opinion
 _TIER_SOFT = 0.85      # rarely sampled, mild deprioritize
-_TIER_COLD = 0.62      # modern/electronic-leaning, least sample-friendly
+_TIER_COLD = 0.35      # modern dance/metal branches: very low source yield
 
 # Country bonus — additive nudge folded in multiplicatively below.
 _GREECE_BONUS = 1.35   # the user's home crate; surface Greek gems more often
@@ -168,7 +169,35 @@ _STYLE_WEIGHTS: dict[str, float] = {
     "garage house": _TIER_COLD,
     "synth-pop": _TIER_SOFT,
     "euro house": _TIER_COLD,
+    "electro house": _TIER_COLD,
+    "progressive house": _TIER_COLD,
+    "hardstyle": _TIER_COLD,
+    "dubstep": _TIER_COLD,
+    "drum n bass": _TIER_COLD,
+    "drum & bass": _TIER_COLD,
+    "industrial": _TIER_COLD,
+    # Metal is occasionally sampled, but is a poor default discovery lane.
+    "heavy metal": _TIER_COLD,
+    "death metal": _TIER_COLD,
+    "black metal": _TIER_COLD,
+    "doom metal": _TIER_COLD,
+    "thrash": _TIER_COLD,
+    "speed metal": _TIER_COLD,
+    "power metal": _TIER_COLD,
+    "grindcore": _TIER_COLD,
+    "metalcore": _TIER_COLD,
+    "nu metal": _TIER_COLD,
+    "sludge metal": _TIER_COLD,
 }
+
+_LOW_YIELD_STYLES: frozenset[str] = frozenset({
+    "techno", "house", "trance", "eurodance", "gabber", "hardcore",
+    "euro house", "electro house", "progressive house", "deep house",
+    "garage house", "hardstyle", "dubstep", "drum n bass", "drum & bass",
+    "heavy metal", "death metal", "black metal", "doom metal", "thrash",
+    "speed metal", "power metal", "grindcore", "metalcore", "nu metal",
+    "sludge metal",
+})
 
 
 # ─── Greek-signal detection ──────────────────────────────────────────
@@ -282,7 +311,76 @@ def sample_affinity(
     elif country and _norm(country) in _INTL_DIG_COUNTRIES:
         score *= _INTL_DIG_BONUS
 
+    # A broad Discogs genre such as Rock or Electronic can otherwise hide a
+    # very low-yield sub-style. Apply the negative signal independently from
+    # the best positive style instead of letting max() erase it.
+    if any(_norm(style) in _LOW_YIELD_STYLES for style in styles):
+        score *= 0.28
+
     return score
+
+
+def is_low_yield_source(styles: Iterable[str]) -> bool:
+    """Return whether the styles are poor default sources for beat sampling."""
+    return any(_norm(style) in _LOW_YIELD_STYLES for style in styles or ())
+
+
+def sample_reasons(
+    *,
+    genres: Iterable[str],
+    styles: Iterable[str],
+    country: Optional[str],
+    year: Optional[int],
+) -> tuple[str, ...]:
+    """Short producer-facing explanations for why a record was ranked."""
+    genres = list(genres or ())
+    styles = list(styles or ())
+    reasons: list[str] = []
+
+    ranked_styles = sorted(
+        ((label, _STYLE_WEIGHTS.get(_norm(label), 1.0)) for label in styles),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for label, weight in ranked_styles:
+        if weight >= _TIER_GOOD and label not in reasons:
+            reasons.append(label)
+        if len(reasons) == 2:
+            break
+
+    if not reasons:
+        for label in genres:
+            if _GENRE_WEIGHTS.get(_norm(label), 1.0) >= _TIER_GOOD:
+                reasons.append(label)
+                break
+    if year is not None and 1960 <= year <= 1984:
+        reasons.append("golden source era")
+    if is_greek(styles, country):
+        reasons.append("Greek deep cut")
+    elif country and _norm(country) in _INTL_DIG_COUNTRIES:
+        reasons.append("global crate")
+    return tuple(dict.fromkeys(reasons))[:3]
+
+
+def producer_rank_score(
+    *,
+    desirability: float,
+    affinity: float,
+    have: int,
+    intensity: float,
+) -> float:
+    """Rank for sample utility first, collector signal second, chance last."""
+    intensity = max(0.0, min(1.0, intensity))
+    desirability_signal = 0.35 + min(max(desirability, 0.0), 3.0)
+    collector_signal = 0.55 + 0.45 * min(
+        1.0,
+        math.log1p(max(have, 0)) / math.log1p(500),
+    )
+    return (
+        desirability_signal ** (1.0 - intensity)
+        * max(affinity, 0.05) ** (0.75 + intensity)
+        * collector_signal
+    )
 
 
 def blended_score(

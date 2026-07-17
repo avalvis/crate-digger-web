@@ -24,9 +24,9 @@ export function Topbar({ query, onQuery }: { query: string; onQuery: (value: str
         </label>
       )}
       <div className="window-controls" aria-label="Window controls">
-        <button type="button" aria-label="Minimize" onClick={() => windowAction('minimize')}><Minus size={17} /></button>
-        <button type="button" aria-label="Maximize" onClick={() => windowAction('maximize')}><Square size={13} /></button>
-        <button type="button" aria-label="Close" onClick={() => windowAction('close')}><X size={17} /></button>
+        <button type="button" aria-label="Minimize" onClick={() => void windowAction('minimize')}><Minus size={17} /></button>
+        <button type="button" aria-label="Maximize" onClick={() => void windowAction('maximize')}><Square size={13} /></button>
+        <button type="button" aria-label="Close" onClick={() => void windowAction('close')}><X size={17} /></button>
       </div>
     </header>
   )

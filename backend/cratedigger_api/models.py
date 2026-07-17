@@ -107,8 +107,9 @@ class DiscoveryFilters(ApiModel):
     min_have: int = Field(default=10, ge=1)
     max_have: int = Field(default=3000, ge=1)
     prioritize_samples: bool = True
-    sample_intensity: float = Field(default=0.6, ge=0, le=1)
+    sample_intensity: float = Field(default=0.9, ge=0, le=1)
     allow_compilations: bool = False
+    profile: Literal["boom_bap", "lofi", "global", "cinematic"] = "boom_bap"
     count: int = Field(default=8, ge=1, le=24)
 
 
@@ -126,6 +127,10 @@ class Suggestion(ApiModel):
     youtube_title: str | None = None
     youtube_duration_seconds: int | None = None
     match_score: float | None = None
+    sample_score: float = 1.0
+    sample_reasons: list[str] = Field(default_factory=list)
+    artwork_url: str | None = None
+    discogs_url: str | None = None
     sample_friendly: bool = True
     demo: bool = False
 
@@ -189,4 +194,3 @@ class ExportResponse(ApiModel):
     accepted: int
     destination: str
     message: str
-

@@ -2,6 +2,8 @@
 
 A desktop-first web redesign of Crate Digger. React renders the interface; a loopback FastAPI sidecar adapts the existing Python media engine, SQLite vault, discovery, analysis, stems, and MPC export services.
 
+Digital Crate v0.2 uses producer-focused Boom Bap, Lo-Fi, Global, and Cinematic lenses. It searches several Discogs lanes per dig, suppresses low-yield metal/EDM sources, diversifies countries and artists, and resolves only credible YouTube Music audio matches.
+
 New to this stack? Read the [beginner developer guide](guide.md) for an explanation of each technology, daily commands, testing, sidecar packaging, and Windows installer builds.
 
 ## Development

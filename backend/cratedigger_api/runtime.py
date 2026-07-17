@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import threading
@@ -14,11 +15,26 @@ from utils.config import ConfigManager
 from .events import EventHub
 
 
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.1"
 
 
 class RuntimeUnavailable(RuntimeError):
     pass
+
+
+def configure_file_logging(data_dir: Path) -> None:
+    """Keep web-sidecar diagnostics beside the user's database and config."""
+    path = Path(data_dir) / "cratedigger-web.log"
+    logger = logging.getLogger("cratedigger")
+    logger.setLevel(logging.DEBUG)
+    for handler in logger.handlers:
+        if getattr(handler, "_crate_log_path", None) == str(path):
+            return
+    handler = RotatingFileHandler(path, maxBytes=3 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    handler._crate_log_path = str(path)  # type: ignore[attr-defined]
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)-34s %(message)s"))
+    logger.addHandler(handler)
 
 
 def default_data_dir() -> Path:
@@ -87,6 +103,7 @@ class EngineRuntime:
     def __init__(self, data_dir: Path, event_hub: EventHub, logger: logging.Logger | None = None) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        configure_file_logging(self.data_dir)
         self.log = logger or logging.getLogger("cratedigger.web")
         self.events = event_hub
         self.config = ConfigManager(self.data_dir / "config.json", logger=self.log.getChild("config"))
@@ -96,6 +113,7 @@ class EngineRuntime:
 
         self._lock = threading.RLock()
         self._queue: Any = None
+        self._pipeline: Any = None
         self._discovery: Any = None
         self._preview: Any = None
         self._exporter: Any = None
@@ -191,6 +209,7 @@ class EngineRuntime:
                     logger=self.log.getChild("exporter"),
                 )
                 self._queue = queue
+                self._pipeline = pipeline
                 self._media_error = None
             except Exception as exc:
                 self._media_error = f"{type(exc).__name__}: {exc}"
@@ -298,6 +317,22 @@ class EngineRuntime:
         updater(**values)
         if section == "discovery":
             self._discovery = None
+
+    def set_discogs_token(self, value: str | None) -> None:
+        self.config.set_discogs_token(value)
+        self._discovery = None
+
+    def set_deepseek_key(self, value: str | None) -> None:
+        snapshot = self.config.set_deepseek_key(value)
+        if self._pipeline is None:
+            return
+        from core.ai_metadata import make_ai_enricher
+
+        enricher = make_ai_enricher(
+            snapshot.deepseek_key,
+            logger=self.log.getChild("ai"),
+        ) if snapshot.deepseek_key else None
+        self._pipeline.update_ai_enricher(enricher)
 
     def config_payload(self) -> dict[str, Any]:
         snap = self.config.snapshot()

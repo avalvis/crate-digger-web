@@ -1,26 +1,50 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { DropdownMenu } from 'radix-ui'
-import { Link } from 'react-router-dom'
 import { Disc3, ExternalLink, Grid2X2, List, MoreVertical, Play, Plus, RefreshCw, SlidersHorizontal, WandSparkles } from 'lucide-react'
 import { api, mediaUrl } from '../lib/api'
 import type { Suggestion } from '../lib/types'
 import { usePlayerStore } from '../store/player'
 import { useToastStore } from '../store/toast'
 
-const eras = [
-  ['All eras', undefined, undefined],
-  ['60s–70s Soul', 1960, 1979],
-  ['70s Jazz/Funk', 1970, 1979],
-  ['Greek 60s–80s', 1960, 1989],
-  ['Library / OST', 1960, 1989],
+const profiles = [
+  ['boom_bap', 'Boom-bap gold'],
+  ['lofi', 'Lo-fi textures'],
+  ['global', 'Global deep cuts'],
+  ['cinematic', 'Cinematic / library'],
 ] as const
+
+const eras = [
+  ['All source eras', undefined, undefined],
+  ['Golden source · 1960–79', 1960, 1979],
+  ['Dusty early · 1945–64', 1945, 1964],
+  ['Seventies · 1970–79', 1970, 1979],
+  ['Eighties · 1980–89', 1980, 1989],
+] as const
+
+const countries = ['', 'Greece', 'Brazil', 'Japan', 'France', 'Italy', 'Turkey', 'Nigeria', 'Ghana', 'Ethiopia', 'Jamaica', 'India']
 
 function initials(item: Suggestion) {
   return item.artist.split(/\s+/).slice(0, 2).map((word) => word[0]).join('')
 }
 
 function artClass(index: number) { return `record-art record-art--${(index % 4) + 1}` }
+
+function RecordArtwork({ item, index, featured = false }: { item?: Suggestion; index: number; featured?: boolean }) {
+  return (
+    <div className={`${artClass(index)} ${featured ? 'featured-dig__art' : ''}`}>
+      {item?.artwork_url
+        ? <img src={item.artwork_url} alt={`${item.artist} — ${item.title} cover`} loading="lazy" />
+        : <><span>{item ? initials(item) : 'CD'}</span><i /></>}
+    </div>
+  )
+}
+
+function SampleReasons({ item }: { item: Suggestion }) {
+  const reasons = item.sample_reasons || []
+  if (!reasons.length) return <div className="sample-label">• producer-ranked source</div>
+  return <div className="sample-reasons">{reasons.map((reason) => <span key={reason}>{reason}</span>)}</div>
+}
 
 function SuggestionCard({ item, index, onPreview, onQueue, busy }: {
   item: Suggestion
@@ -31,17 +55,18 @@ function SuggestionCard({ item, index, onPreview, onQueue, busy }: {
 }) {
   return (
     <article className="dig-card">
-      <div className={artClass(index)}><span>{initials(item)}</span><i /></div>
+      <RecordArtwork item={item} index={index} />
       <div className="dig-card__copy">
         <span className="artist">{item.artist}</span>
         <h3>{item.title}</h3>
         <div className="metadata">
-          <span>{item.year || '—'}</span><b>•</b><span>{item.country || 'Unknown'}</span><b>•</b><span>{item.genre || item.style || 'Other'}</span>
-          {typeof item.match_score === 'number' && <><b>•</b><span>YT {Math.round(item.match_score * 100)}%</span></>}
+          <span>{item.year || '—'}</span><b>•</b><span>{item.country || 'Unknown'}</span><b>•</b>
+          <span>{item.style || item.genre || 'Other'}</span>
+          {typeof item.match_score === 'number' && <><b>•</b><span>match {Math.round(item.match_score * 100)}%</span></>}
         </div>
-        {item.sample_friendly && <div className="sample-label">• sample-friendly</div>}
-        <div className="ready-label">{item.demo ? 'Demo reel' : 'Ready'}</div>
-        <span className="preview-note">{item.demo ? 'Connect Discogs to load a playable match' : 'Press Preview to load waveform'}</span>
+        <SampleReasons item={item} />
+        <div className="ready-label">{item.demo ? 'Demo reel' : 'Ready to audition'}</div>
+        <span className="preview-note">{item.demo ? 'Add a Discogs token in Settings for live playable gems' : 'Preview before committing it to your vault'}</span>
         <div className="dig-card__actions">
           <button className="button button--outline" disabled={!item.youtube_video_id || busy} onClick={() => onPreview(item)}><Play size={14} fill="currentColor" /> Preview</button>
           <button className="button button--primary" disabled={!item.youtube_url || busy} onClick={() => onQueue(item)}><Plus size={15} /> Queue it</button>
@@ -53,27 +78,37 @@ function SuggestionCard({ item, index, onPreview, onQueue, busy }: {
               <DropdownMenu.Content className="menu-content" sideOffset={7}>
                 <DropdownMenu.Item onSelect={() => navigator.clipboard.writeText(`${item.artist} — ${item.title}`)}>Copy track name</DropdownMenu.Item>
                 <DropdownMenu.Item disabled={!item.youtube_url} onSelect={() => item.youtube_url && window.open(item.youtube_url, '_blank')}>Open YouTube</DropdownMenu.Item>
+                <DropdownMenu.Item disabled={!item.discogs_url} onSelect={() => item.discogs_url && window.open(item.discogs_url, '_blank')}>Open Discogs</DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         </div>
+        {item.discogs_url && <a className="discogs-credit" href={item.discogs_url} target="_blank" rel="noreferrer">Data provided by Discogs</a>}
       </div>
     </article>
   )
 }
 
 export function DigitalCrate() {
+  const [profile, setProfile] = useState<(typeof profiles)[number][0]>('boom_bap')
   const [era, setEra] = useState(0)
+  const [country, setCountry] = useState('')
   const [genre, setGenre] = useState('')
   const [view, setView] = useState<'list' | 'grid'>('list')
+  const initialDigStarted = useRef(false)
   const setPlayer = usePlayerStore((state) => state.setTrack)
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
   const filters = useMemo(() => ({
-    year_min: eras[era][1], year_max: eras[era][2], genre: genre || undefined,
-    min_have: 10, max_have: 3000, prioritize_samples: true, sample_intensity: 0.6,
+    profile,
+    year_min: eras[era][1], year_max: eras[era][2],
+    country: country || undefined,
+    genre: genre || undefined,
+    min_have: 5, max_have: 2500,
+    prioritize_samples: true, sample_intensity: 0.9,
     allow_compilations: false, count: 8,
-  }), [era, genre])
+  }), [profile, era, country, genre])
+
   const dig = useMutation({
     mutationFn: () => api.dig(filters),
     onError: (error) => toast(error.message, 'error'),
@@ -108,37 +143,48 @@ export function DigitalCrate() {
     onError: (error) => toast(error.message, 'error'),
   })
 
-  useEffect(() => { dig.mutate() }, [])
+  useEffect(() => {
+    if (initialDigStarted.current) return
+    initialDigStarted.current = true
+    dig.mutate()
+  }, [])
   const items = dig.data?.items || []
+  const featured = items[0]
   const busy = enqueue.isPending || preview.isPending
+  const queue = (item: Suggestion, stems = false) => enqueue.mutate({ item, stems })
 
   return (
     <div className="page digital-crate">
       <section className="crate-toolbar">
         <div className="filter-cluster">
+          <label>Producer lens<select value={profile} onChange={(event) => setProfile(event.target.value as typeof profile)}>{profiles.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Era<select value={era} onChange={(event) => setEra(Number(event.target.value))}>{eras.map(([label], index) => <option key={label} value={index}>{label}</option>)}</select></label>
-          <label>Genre<select value={genre} onChange={(event) => setGenre(event.target.value)}><option value="">Any genre</option><option>Funk / Soul</option><option>Jazz</option><option>Electronic</option><option>Rock</option></select></label>
-          <button className="button button--primary dig-button" onClick={() => dig.mutate()} disabled={dig.isPending}><RefreshCw size={16} className={dig.isPending ? 'spin' : ''} /> {dig.isPending ? 'Digging…' : 'Dig the crate'}</button>
+          <label>Country<select value={country} onChange={(event) => setCountry(event.target.value)}><option value="">World roulette</option>{countries.slice(1).map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Genre override<select value={genre} onChange={(event) => setGenre(event.target.value)}><option value="">Let the lens choose</option><option>Funk / Soul</option><option>Jazz</option><option>Latin</option><option>Stage & Screen</option><option>Reggae</option><option>Folk, World, & Country</option><option>Rock</option><option>Electronic</option></select></label>
+          <button className="button button--primary dig-button" onClick={() => dig.mutate()} disabled={dig.isPending}><RefreshCw size={16} className={dig.isPending ? 'spin' : ''} /> {dig.isPending ? 'Digging several crates…' : 'Dig for gems'}</button>
         </div>
         <div className="view-switch"><SlidersHorizontal size={16} /><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><List size={18} /></button><button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')}><Grid2X2 size={18} /></button></div>
       </section>
 
-      {dig.data?.message && <div className="notice"><Disc3 size={18} /><span>{dig.data.message}</span><Link to="/settings">Open Settings</Link></div>}
+      {dig.isError && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={() => dig.mutate()}>Try again</button></div>}
+      {dig.data?.message && <div className="notice"><Disc3 size={18} /><span>{dig.data.message}</span></div>}
 
       <section className="featured-dig">
-        <div className="featured-dig__signal"><Play size={28} fill="currentColor" /></div>
+        <button className="featured-dig__signal" disabled={!featured || busy} onClick={() => featured && preview.mutate(featured)} aria-label="Preview featured gem"><Play size={28} fill="currentColor" /></button>
         <div className="featured-dig__copy">
-          <span>NOW DIGGING</span>
-          <h2>{items[0]?.title || 'Waiting for the next pull'}</h2>
-          <strong>{items[0]?.artist || 'Crate Digger'}</strong>
+          <span>TOP PULL · {profiles.find(([value]) => value === profile)?.[1]}</span>
+          <h2>{featured?.title || (dig.isPending ? 'Digging across several crates…' : 'Waiting for the next pull')}</h2>
+          <strong>{featured?.artist || 'Crate Digger'}</strong>
+          {featured && <SampleReasons item={featured} />}
           <div className="hero-wave" aria-hidden="true">{Array.from({ length: 72 }).map((_, index) => <i key={index} style={{ height: `${12 + ((index * 19) % 45)}%` }} />)}</div>
+          {featured && <div className="featured-dig__actions"><button className="button button--primary" disabled={busy} onClick={() => preview.mutate(featured)}><Play size={14} /> Preview</button><button className="button button--dark" disabled={busy} onClick={() => queue(featured)}><Plus size={14} /> Queue it</button>{featured.discogs_url && <a href={featured.discogs_url} target="_blank" rel="noreferrer">Data provided by Discogs</a>}</div>}
         </div>
-        <div className={`${artClass(0)} featured-dig__art`}><span>{items[0] ? initials(items[0]) : 'CD'}</span><i /></div>
+        <RecordArtwork item={featured} index={0} featured />
       </section>
 
       <div className={`dig-results dig-results--${view}`}>
         {items.slice(1).map((item, index) => (
-          <SuggestionCard key={item.discogs_master_id} item={item} index={index + 1} busy={busy} onPreview={(value) => preview.mutate(value)} onQueue={(value, stems = false) => enqueue.mutate({ item: value, stems })} />
+          <SuggestionCard key={item.discogs_master_id} item={item} index={index + 1} busy={busy} onPreview={(value) => preview.mutate(value)} onQueue={queue} />
         ))}
       </div>
     </div>

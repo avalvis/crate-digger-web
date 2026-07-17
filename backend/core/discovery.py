@@ -53,8 +53,11 @@ import requests
 from core.database import DiscoveryRecord, VaultDatabase
 from core.sampling_taxonomy import (
     blended_score,
+    is_low_yield_source,
     pick_wide_open_discogs_seed,
+    producer_rank_score,
     sample_affinity,
+    sample_reasons,
 )
 
 
@@ -77,8 +80,9 @@ class DiscoveryFilters:
 
     # Sample-friendliness weighting (see core.sampling_taxonomy).
     prioritize_samples: bool = True        # tilt ranking toward sample-friendly
-    sample_intensity: float = 0.6          # 0=pure desirability, 1=affinity-led
+    sample_intensity: float = 0.9          # 0=pure desirability, 1=affinity-led
     allow_compilations: bool = False       # include "Various Artists" masters
+    profile: str = "boom_bap"              # producer-focused seed portfolio
 
 
 @dataclass(slots=True, frozen=True)
@@ -95,6 +99,8 @@ class DiscogsCandidate:
     formats: tuple[str, ...]
     have: int
     want: int
+    artwork_url: Optional[str] = None
+    discogs_url: Optional[str] = None
 
     @property
     def desirability(self) -> float:
@@ -115,7 +121,21 @@ class DiscogsCandidate:
         """Final ranking score: desirability blended with sample affinity."""
         if not prioritize:
             return self.desirability
-        return blended_score(self.desirability, self.sample_affinity, intensity)
+        return producer_rank_score(
+            desirability=self.desirability,
+            affinity=self.sample_affinity,
+            have=self.have,
+            intensity=intensity,
+        )
+
+    @property
+    def sample_reasons(self) -> tuple[str, ...]:
+        return sample_reasons(
+            genres=self.genres,
+            styles=self.styles,
+            country=self.country,
+            year=self.year,
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -137,6 +157,10 @@ class DiscoverySuggestion:
     youtube_title: str                      # raw YT title for debugging
     youtube_duration_seconds: Optional[int]
     match_score: float                      # 0..1, quality of YT match
+    sample_score: float
+    sample_reasons: tuple[str, ...]
+    artwork_url: Optional[str] = None
+    discogs_url: Optional[str] = None
 
     @property
     def display_name(self) -> str:
@@ -272,6 +296,48 @@ class DiscoveryEngine:
 
     # How many Discogs candidates to try when the first YT match fails.
     MAX_YT_MATCH_ATTEMPTS = 10
+    MIN_YT_MATCH_SCORE = 0.55
+
+    # A filterless dig is a portfolio, not one random genre. Each request
+    # samples several independent record-buying lanes so a reel feels like
+    # moving through Radiooooo stations rather than opening one Discogs bin.
+    _PROFILE_SEEDS: dict[str, tuple[tuple[str, str], ...]] = {
+        "boom_bap": (
+            ("style", "Soul"), ("style", "Funk"),
+            ("style", "Soul-Jazz"), ("style", "Jazz-Funk"),
+            ("style", "Gospel"), ("style", "Library Music"),
+            ("style", "Soundtrack"), ("style", "Psychedelic Rock"),
+            ("style", "Afrobeat"), ("style", "Highlife"),
+            ("style", "MPB"), ("style", "Latin Jazz"),
+            ("style", "Dub"), ("style", "Rebetiko"),
+        ),
+        "lofi": (
+            ("style", "Soul-Jazz"), ("style", "Modal"),
+            ("style", "Bossa Nova"), ("style", "MPB"),
+            ("style", "Lounge"), ("style", "Easy Listening"),
+            ("style", "Soundtrack"), ("style", "Library Music"),
+            ("style", "Folk"), ("style", "Gospel"),
+            ("style", "Ambient"), ("style", "Downtempo"),
+            ("style", "Éntekhno"), ("style", "Spiritual Jazz"),
+        ),
+        "global": (
+            ("style", "Afrobeat"), ("style", "Highlife"),
+            ("style", "Ethio-jazz"), ("style", "MPB"),
+            ("style", "Cumbia"), ("style", "Boogaloo"),
+            ("style", "Anatolian Rock"), ("style", "Rebetiko"),
+            ("style", "Bollywood"), ("style", "Enka"),
+            ("style", "Gamelan"), ("style", "Raï"),
+            ("style", "Dub"), ("style", "Latin Jazz"),
+        ),
+        "cinematic": (
+            ("style", "Library Music"), ("style", "Soundtrack"),
+            ("style", "Score"), ("style", "Theme"),
+            ("style", "Lounge"), ("style", "Easy Listening"),
+            ("style", "Experimental"), ("style", "Avantgarde"),
+            ("style", "Spiritual Jazz"), ("style", "Psychedelic Rock"),
+            ("style", "Krautrock"), ("style", "Space-Age"),
+        ),
+    }
 
     _PRODUCER_LANE_ORDER: tuple[str, ...] = (
         "soul_funk",
@@ -360,9 +426,10 @@ class DiscoveryEngine:
             max_calls=55 if self._token else 20,
             window_seconds=60.0,
         )
-        # YTM has no published quota; 45/min is conservative and
-        # well below what triggers IP throttling in practice.
-        self._ytm_limiter = _TokenBucket(max_calls=45, window_seconds=60.0)
+        # One candidate may need both the song and video indexes. Allow a
+        # complete reel to burst without a self-inflicted one-minute pause,
+        # while retaining a rolling guard against repeated Dig spam.
+        self._ytm_limiter = _TokenBucket(max_calls=75, window_seconds=60.0)
 
         self._stats = _CallStats()
 
@@ -449,6 +516,7 @@ class DiscoveryEngine:
             )
 
         pool = self._rank_and_shuffle(candidates, filters)
+        pool = self._diversify_candidate_pool(pool, filters, count=count)
         self._emit_progress(
             progress,
             f"Found {len(candidates)} records — matching on YouTube Music…",
@@ -500,6 +568,45 @@ class DiscoveryEngine:
 
         self._remember_surfaced(s.discogs_master_id for s in suggestions)
         return suggestions
+
+    @classmethod
+    def _diversify_candidate_pool(
+        cls,
+        pool: list[DiscogsCandidate],
+        filters: DiscoveryFilters,
+        *,
+        count: int,
+    ) -> list[DiscogsCandidate]:
+        """Move country/artist repeats behind a varied producer reel.
+
+        This is an ordering constraint, not an exclusion: deferred records stay
+        available if YouTube matching exhausts the diverse front of the pool.
+        A user-selected country deliberately disables the country cap.
+        """
+        if not cls._uses_profile_portfolio(filters):
+            return pool
+
+        country_cap = max(2, math.ceil(count * 0.25))
+        country_counts: dict[str, int] = {}
+        artist_counts: dict[str, int] = {}
+        varied: list[DiscogsCandidate] = []
+        deferred: list[DiscogsCandidate] = []
+
+        for cand in pool:
+            country = _norm_country(cand.country) or "unknown"
+            artist = _norm_label(_extract_primary_artist(cand.artist)) or "unknown"
+            repeats_country = (
+                not filters.country and country_counts.get(country, 0) >= country_cap
+            )
+            repeats_artist = artist != "unknown" and artist_counts.get(artist, 0) >= 1
+            if repeats_country or repeats_artist:
+                deferred.append(cand)
+                continue
+            varied.append(cand)
+            country_counts[country] = country_counts.get(country, 0) + 1
+            artist_counts[artist] = artist_counts.get(artist, 0) + 1
+
+        return [*varied, *deferred]
 
     def record_suggestion(
         self, suggestion: DiscoverySuggestion, *, was_queued: bool = False,
@@ -611,11 +718,21 @@ class DiscoveryEngine:
         prioritize = filters.prioritize_samples
         intensity = filters.sample_intensity
 
+        if prioritize and intensity >= 0.75 and self._uses_profile_portfolio(filters):
+            producer_fresh = [c for c in fresh if not is_low_yield_source(c.styles)]
+            if producer_fresh:
+                dropped = len(fresh) - len(producer_fresh)
+                if dropped:
+                    self._log.debug("Suppressed %d low-yield default candidates", dropped)
+                fresh = producer_fresh
+
         def _jittered_score(c: DiscogsCandidate) -> float:
             base = c.rank_score(prioritize=prioritize, intensity=intensity)
             if self._is_likely_time_waster(c):
-                base *= 0.55
-            return base * (0.25 + 0.75 * self._rng.random())
+                base *= 0.18
+            # Chance should break near-ties, never turn a weak source into the
+            # top result. The old 0.25..1.0 range overwhelmed the taxonomy.
+            return base * (0.90 + 0.20 * self._rng.random())
 
         buckets: dict[str, list[DiscogsCandidate]] = {
             lane: [] for lane in self._PRODUCER_LANE_ORDER
@@ -633,9 +750,10 @@ class DiscoveryEngine:
             lane_order = [first, *rest, lane_order[-1]]
 
         out: list[DiscogsCandidate] = []
-        while any(buckets.values()):
+        productive_lanes = [lane for lane in lane_order if lane != "wildcard"]
+        while any(buckets[lane] for lane in productive_lanes):
             progressed = False
-            for lane in lane_order:
+            for lane in productive_lanes:
                 bucket = buckets[lane]
                 if not bucket:
                     continue
@@ -643,6 +761,9 @@ class DiscoveryEngine:
                 progressed = True
             if not progressed:
                 break
+        # Wildcards are exploration insurance, not a guaranteed seat in every
+        # reel. They are considered only after producer-focused lanes.
+        out.extend(buckets["wildcard"])
         return out
 
     @classmethod
@@ -667,18 +788,14 @@ class DiscoveryEngine:
             return "brazil_latin"
         if country in cls._LANE_COUNTRIES["afro_intl"] or styles & cls._LANE_STYLE_TERMS["afro_intl"]:
             return "afro_intl"
-        if (
-            "rock" in genres
-            or "folk, world, & country" in genres
-            or styles & cls._LANE_STYLE_TERMS["psych_prog_folk"]
-        ):
+        if styles & cls._LANE_STYLE_TERMS["psych_prog_folk"]:
             return "psych_prog_folk"
         return "wildcard"
 
     @classmethod
     def _is_likely_time_waster(cls, cand: DiscogsCandidate) -> bool:
         styles = {_norm_label(s) for s in cand.styles}
-        if styles & cls._TIME_WASTER_STYLES:
+        if styles & cls._TIME_WASTER_STYLES or is_low_yield_source(cand.styles):
             return True
         if cand.year is not None and cand.year >= 2000 and cand.sample_affinity < 1.0:
             return True
@@ -718,6 +835,92 @@ class DiscoveryEngine:
             return self.MAX_SEARCH_PAGES + 3
         return self.MAX_SEARCH_PAGES
 
+    @classmethod
+    def _uses_profile_portfolio(cls, filters: DiscoveryFilters) -> bool:
+        return not any((filters.genre, filters.style, filters.query, filters.format))
+
+    def _search_profile_portfolio(
+        self,
+        filters: DiscoveryFilters,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> list[DiscogsCandidate]:
+        profile = filters.profile if filters.profile in self._PROFILE_SEEDS else "boom_bap"
+        seeds = list(self._PROFILE_SEEDS[profile])
+        self._rng.shuffle(seeds)
+        budget = min(10, len(seeds))
+        seeds = seeds[:budget]
+
+        if filters.year is not None:
+            years: list[Optional[int]] = [filters.year] * budget
+        elif filters.year_min is not None or filters.year_max is not None:
+            current_year = time.localtime().tm_year
+            lower = filters.year_min or max(1900, (filters.year_max or current_year) - 50)
+            upper = filters.year_max or current_year
+            if lower > upper:
+                lower, upper = upper, lower
+            years = [self._rng.randint(lower, upper) for _ in range(budget)]
+        else:
+            classic_ranges = {
+                "boom_bap": (1958, 1984),
+                "lofi": (1950, 1992),
+                "global": (1950, 1989),
+                "cinematic": (1950, 1989),
+            }
+            lower, upper = classic_ranges[profile]
+            # Keep two unbounded pulls for unexpected older/newer wildcards.
+            years = [self._rng.randint(lower, upper) for _ in range(budget - 2)] + [None, None]
+            self._rng.shuffle(years)
+
+        min_have_floor = self._effective_min_have(filters)
+        seen_masters: set[int] = set()
+        candidates: list[DiscogsCandidate] = []
+        used_seeds: list[str] = []
+
+        for index, ((field_name, seed), selected_year) in enumerate(zip(seeds, years), start=1):
+            self._check_cancel(cancel_event)
+            self._emit_progress(
+                progress,
+                f"Digging {profile.replace('_', ' ')} crate — {seed} ({index}/{budget})…",
+            )
+            params: dict[str, Any] = {
+                "type": "master",
+                "per_page": 50,
+                field_name: seed,
+                "sort": self._rng.choice(("want", "have", "year", "released")),
+                "sort_order": self._rng.choice(("asc", "desc")),
+                "page": 1 if selected_year is not None else self._rng.randint(1, 3),
+            }
+            if selected_year is not None:
+                params["year"] = selected_year
+            if filters.country:
+                params["country"] = filters.country
+
+            data = self._discogs_get("/database/search", params)
+            used_seeds.append(f"{seed}:{selected_year or 'all'}")
+            for raw in data.get("results") or ():
+                cand = self._result_to_candidate(
+                    raw,
+                    allow_compilations=filters.allow_compilations,
+                )
+                if cand is None or cand.master_id in seen_masters:
+                    continue
+                if cand.have < min_have_floor or cand.have > filters.max_have:
+                    continue
+                if not self._matches_strict_filters(cand, filters):
+                    continue
+                seen_masters.add(cand.master_id)
+                candidates.append(cand)
+
+        self._log.info(
+            "Profile portfolio %s yielded %d candidates from %s",
+            profile,
+            len(candidates),
+            ", ".join(used_seeds),
+        )
+        return candidates
+
     # ── Discogs ──
 
     def _search_discogs(
@@ -728,6 +931,13 @@ class DiscoveryEngine:
         progress: Optional[Callable[[str], None]] = None,
     ) -> list[DiscogsCandidate]:
         """Paginated Discogs search with exploration-friendly paging."""
+        if self._uses_profile_portfolio(filters):
+            return self._search_profile_portfolio(
+                filters,
+                cancel_event=cancel_event,
+                progress=progress,
+            )
+
         effective = filters
         min_have_floor = self._effective_min_have(filters)
         wide_open = self._is_wide_open(filters)
@@ -982,12 +1192,11 @@ class DiscoveryEngine:
 
         formats = tuple(str(x) for x in (r.get("format") or ()) if str(x).strip())
 
-        # Generic Various Artist bins burn YTM budget. Keep named comps and
-        # reissues in play for strong album/full-upload matches.
+        # A disabled compilation switch should be literal. Various-artist
+        # masters are expensive and ambiguous to resolve to one audio source.
         if (
             not allow_compilations
             and artist.strip().lower() in DiscoveryEngine._VARIOUS_NAMES
-            and _looks_generic_compilation(title, formats)
         ):
             return None
 
@@ -1000,6 +1209,11 @@ class DiscoveryEngine:
         community = r.get("community") or {}
         have = int(community.get("have") or 0)
         want = int(community.get("want") or 0)
+        artwork_url = str(r.get("cover_image") or r.get("thumb") or "").strip() or None
+        if artwork_url and not artwork_url.startswith("https://"):
+            artwork_url = None
+        uri = str(r.get("uri") or "").strip()
+        discogs_url = f"https://www.discogs.com{uri}" if uri.startswith("/") else None
 
         return DiscogsCandidate(
             master_id=int(master_id),
@@ -1013,6 +1227,8 @@ class DiscoveryEngine:
             formats=formats,
             have=have,
             want=want,
+            artwork_url=artwork_url,
+            discogs_url=discogs_url,
         )
 
     def _discogs_get(
@@ -1123,6 +1339,27 @@ class DiscoveryEngine:
                             by_video_id[video_id] = enriched
                             search_labels[video_id] = f"{query!r}/{ytm_filter}"
 
+                    # A strong catalog-song hit is already the preferred
+                    # source. Returning it immediately halves YTM calls for
+                    # most successful candidates and avoids limiter pauses.
+                    if ytm_filter == "songs":
+                        song_scored = self._score_ytm_results(
+                            list(by_video_id.values()), cand, primary_artist,
+                        )
+                        if song_scored:
+                            song_score, song_best = song_scored[0]
+                            compilation_ok = (
+                                not _needs_strong_compilation_match(cand)
+                                or song_score >= 0.72
+                            )
+                            if song_score >= 0.88 and compilation_ok:
+                                return self._build_suggestion(
+                                    cand,
+                                    song_best,
+                                    song_score,
+                                    search_labels,
+                                )
+
             scored = self._score_ytm_results(
                 list(by_video_id.values()), cand, primary_artist,
             )
@@ -1131,32 +1368,48 @@ class DiscoveryEngine:
 
             best_score, best = scored[0]
             video_id = str(best.get("videoId") or "")
+            if best_score < self.MIN_YT_MATCH_SCORE:
+                continue
             if _needs_strong_compilation_match(cand) and best_score < 0.72:
                 continue
 
-            self._log.debug(
-                "YTM match: search=%s score=%.2f views=%s type=%s/%s",
-                search_labels.get(video_id, "unknown"), best_score,
-                best.get("views"), best.get("resultType"), best.get("videoType"),
-            )
-            return DiscoverySuggestion(
-                discogs_master_id=cand.master_id,
-                discogs_release_id=cand.release_id,
-                artist=cand.artist,
-                title=cand.title,
-                year=cand.year,
-                country=cand.country,
-                genre=(cand.genres[0] if cand.genres else None),
-                style=(cand.styles[0] if cand.styles else None),
-                youtube_url=f"https://music.youtube.com/watch?v={video_id}",
-                youtube_video_id=video_id,
-                youtube_title=str(best.get("title") or ""),
-                youtube_duration_seconds=_ytm_duration_seconds(best),
-                match_score=best_score,
-            )
+            return self._build_suggestion(cand, best, best_score, search_labels)
 
         raise NoYouTubeMatchError(
             f"No YTM result passed quality threshold for {cand.artist} — {cand.title}"
+        )
+
+    def _build_suggestion(
+        self,
+        cand: DiscogsCandidate,
+        best: dict[str, Any],
+        best_score: float,
+        search_labels: dict[str, str],
+    ) -> DiscoverySuggestion:
+        video_id = str(best.get("videoId") or "")
+        self._log.debug(
+            "YTM match: search=%s score=%.2f views=%s type=%s/%s",
+            search_labels.get(video_id, "unknown"), best_score,
+            best.get("views"), best.get("resultType"), best.get("videoType"),
+        )
+        return DiscoverySuggestion(
+            discogs_master_id=cand.master_id,
+            discogs_release_id=cand.release_id,
+            artist=cand.artist,
+            title=cand.title,
+            year=cand.year,
+            country=cand.country,
+            genre=(cand.genres[0] if cand.genres else None),
+            style=(cand.styles[0] if cand.styles else None),
+            youtube_url=f"https://music.youtube.com/watch?v={video_id}",
+            youtube_video_id=video_id,
+            youtube_title=str(best.get("title") or ""),
+            youtube_duration_seconds=_ytm_duration_seconds(best),
+            match_score=best_score,
+            sample_score=round(cand.sample_affinity, 3),
+            sample_reasons=cand.sample_reasons,
+            artwork_url=cand.artwork_url,
+            discogs_url=cand.discogs_url,
         )
 
     def _ytm_search(

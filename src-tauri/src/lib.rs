@@ -46,7 +46,8 @@ pub fn run() {
                 .shell()
                 .sidecar("crate-digger-api")?
                 .env("CRATEDIGGER_PORT", port.to_string())
-                .env("CRATEDIGGER_TOKEN", token.clone());
+                .env("CRATEDIGGER_TOKEN", token.clone())
+                .env("CRATEDIGGER_PARENT_PID", std::process::id().to_string());
             let (mut events, child) = command.spawn()?;
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = events.recv().await {

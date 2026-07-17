@@ -25,10 +25,25 @@ def test_auth_and_health(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            "version": "0.1.1",
+            "version": "0.2.1",
             "engine_ready": False,
             "engine_error": None,
         }
+
+
+def test_windows_tauri_origin_can_reach_loopback_api(tmp_path: Path) -> None:
+    with client_for(tmp_path) as client:
+        response = client.options(
+            "/api/config",
+            headers={
+                "Origin": "http://tauri.localhost",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-crate-token",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://tauri.localhost"
 
 
 def test_demo_dig_without_discogs_token(tmp_path: Path) -> None:
