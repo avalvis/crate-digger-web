@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from core.database import TrackRecord, VaultDatabase
 from cratedigger_api.app import create_app
+from cratedigger_api.runtime import EngineRuntime
 
 
 TOKEN = "test-session"
@@ -140,6 +141,8 @@ def test_track_search_patch_and_byte_range(tmp_path: Path) -> None:
         assert page.status_code == 200
         assert page.json()["total"] == 1
         assert page.json()["items"][0]["file_available"] is True
+        assert page.json()["items"][0]["output_format"] == "wav"
+        assert page.json()["items"][0]["artwork_url"] is None
 
         patched = client.patch(
             f"/api/tracks/{track_id}",
@@ -159,6 +162,31 @@ def test_track_search_patch_and_byte_range(tmp_path: Path) -> None:
         assert len(streamed.content) == 100
 
 
+def test_track_artwork_sidecar_is_exposed_without_loading_media_engine(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    track_dir = tmp_path / "vault" / "Track"
+    track_dir.mkdir(parents=True)
+    audio = track_dir / "track.m4a"
+    audio.write_bytes(b"audio")
+    cover = track_dir / "cover.jpg"
+    cover.write_bytes(b"\xff\xd8cover\xff\xd9")
+
+    with client_for(tmp_path) as client:
+        db = VaultDatabase(data_dir / "vault.db")
+        track_id = db.upsert_track(TrackRecord(
+            file_path=str(audio), artist="Cover Artist", title="Cover Track",
+            source_url="https://example.com/cover", source_platform="manual",
+        ))
+        db.close()
+        track = client.get(f"/api/tracks/{track_id}", headers=HEADERS).json()
+        assert track["artwork_url"] == f"/api/tracks/{track_id}/artwork"
+        response = client.get(f"/api/tracks/{track_id}/artwork?token={TOKEN}")
+        assert response.status_code == 200
+        assert response.content == cover.read_bytes()
+        assert response.headers["content-type"].startswith("image/jpeg")
+
+
 def test_error_shape_is_stable(tmp_path: Path) -> None:
     with client_for(tmp_path) as client:
         response = client.get("/api/tracks/999999", headers=HEADERS)
@@ -167,3 +195,26 @@ def test_error_shape_is_stable(tmp_path: Path) -> None:
             "code": "track_not_found",
             "message": "Track not found",
         }
+
+
+def test_preview_prefetch_and_full_mode_contracts(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def prefetch(_runtime, ids):
+        calls.append(("prefetch", ids))
+        return [{"video_id": value, "state": "pending", "percent": 0, "message": "Queued", "error_message": None} for value in ids]
+
+    def preview(_runtime, video_id, mode="quick"):
+        calls.append(("preview", (video_id, mode)))
+        return {"video_id": video_id, "audio_url": f"/api/previews/{video_id}/audio", "peaks": [0.1], "duration_seconds": 180, "partial": mode == "quick"}
+
+    monkeypatch.setattr(EngineRuntime, "prefetch_previews", prefetch)
+    monkeypatch.setattr(EngineRuntime, "create_preview", preview)
+    with client_for(tmp_path) as client:
+        queued = client.post("/api/previews/prefetch", headers=HEADERS, json={"video_ids": ["a", "b"]})
+        assert queued.status_code == 202
+        assert [item["video_id"] for item in queued.json()["items"]] == ["a", "b"]
+        full = client.post("/api/previews/a?mode=full", headers=HEADERS)
+        assert full.status_code == 200
+        assert full.json()["partial"] is False
+    assert calls == [("prefetch", ["a", "b"]), ("preview", ("a", "full"))]

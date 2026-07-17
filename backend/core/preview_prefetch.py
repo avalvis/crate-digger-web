@@ -222,6 +222,40 @@ class PreviewPrefetchService:
                 return PrefetchState.PENDING
             return entry.state
 
+    def get_status(self, video_ids: list[str]) -> list[dict[str, object]]:
+        """Return durable-enough snapshots for REST resync after navigation."""
+        snapshots: list[dict[str, object]] = []
+        with self._lock:
+            for raw in video_ids:
+                vid = self._preview.normalize_video_id(raw)
+                entry = self._entries.get(vid)
+                snapshots.append({
+                    "video_id": vid,
+                    "state": (entry.state if entry else PrefetchState.PENDING),
+                    "percent": float(entry.percent if entry else 0.0),
+                    "message": entry.message if entry else "Queued",
+                    "error_message": entry.error_message if entry else None,
+                })
+        return snapshots
+
+    def prioritize(self, video_id: str) -> None:
+        """Move a pending reel item to the front without disturbing playback."""
+        vid = self._preview.normalize_video_id(video_id)
+        with self._lock:
+            entry = self._entries.get(vid)
+            if entry is None:
+                entry = _PrefetchEntry(video_id=vid)
+                self._entries[vid] = entry
+            if entry.state in (PrefetchState.READY, PrefetchState.DOWNLOADING, PrefetchState.DECODING):
+                return
+            entry.cancel_event = threading.Event()
+            entry.state = PrefetchState.PENDING
+            entry.error_message = None
+            while vid in self._queue:
+                self._queue.remove(vid)
+            self._queue.appendleft(vid)
+        self._pump()
+
     def get_decoded(self, video_id: str) -> Optional[PreviewData]:
         vid = self._preview.normalize_video_id(video_id)
         with self._lock:

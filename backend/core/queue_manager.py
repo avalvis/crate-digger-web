@@ -348,6 +348,7 @@ class QueueManager:
                     "source_url": request.source_url,
                     "display_name": request.display_name,
                     "origin": request.origin,
+                    "output_format": request.output_format,
                     "enable_stems": request.enable_stems,
                     "stem_model": request.stem_model.value,
                     "use_ai_metadata": request.use_ai_metadata,

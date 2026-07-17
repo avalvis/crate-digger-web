@@ -110,7 +110,7 @@ export function QueuePanel({ open, onOpenChange, queue }: { open: boolean; onOpe
   }, [historyQuery.data, queue?.items, search, tab])
 
   const summary = queue?.summary || { running: 0, waiting: 0, completed: 0, attention: 0, current_job_id: null }
-  const openVault = () => { onOpenChange(false); navigate('/vault') }
+  const openVault = (trackId: number) => { onOpenChange(false); navigate('/vault', { state: { trackId } }) }
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -174,7 +174,7 @@ export function QueuePanel({ open, onOpenChange, queue }: { open: boolean; onOpe
                     <div className="queue-job__actions">
                       {active && <button onClick={() => action.mutate({ type: 'cancel', id: job.id })}><X size={12} /> Cancel</button>}
                       {retryable && <button className="primary" onClick={() => action.mutate({ type: 'retry', id: job.id })}><RotateCcw size={12} /> {job.status === 'complete_with_warnings' ? 'Retry stems' : 'Retry'}</button>}
-                      {job.track_id && <button onClick={openVault}><FolderOpen size={12} /> Open in Vault</button>}
+                      {job.track_id && <button onClick={() => openVault(job.track_id!)}><FolderOpen size={12} /> Open in Vault</button>}
                       {!active && job.status !== 'complete' && <button onClick={() => action.mutate({ type: 'archive', id: job.id })}><Archive size={12} /> Dismiss</button>}
                     </div>
                   </div>

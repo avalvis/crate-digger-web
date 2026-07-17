@@ -27,6 +27,8 @@ from .models import (
     ExportResponse,
     HealthResponse,
     PreviewResponse,
+    PreviewPrefetchRequest,
+    PreviewPrefetchResponse,
     QueueJob,
     QueuePage,
     QueueSummary,
@@ -67,6 +69,8 @@ def _track(record: Any) -> Track:
         notes=record.notes,
         tags=record.tags,
         file_available=Path(record.file_path).exists(),
+        artwork_url=(f"/api/tracks/{int(record.id)}/artwork" if record.artwork_embedded or (Path(record.file_path).parent / "cover.jpg").exists() else None),
+        output_format=(Path(record.file_path).suffix.lower().lstrip(".") if Path(record.file_path).suffix.lower() in {".m4a", ".mp3", ".wav"} else "m4a"),
     )
 
 
@@ -250,6 +254,16 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             raise _error("audio_missing", "The indexed audio file is missing", 404)
         return _stream_file(path, request.headers.get("range"))
 
+    @app.get("/api/tracks/{track_id}/artwork")
+    def track_artwork(track_id: int, _: Guard, core: Runtime) -> FileResponse:
+        try:
+            path = core.track_artwork_path(track_id)
+        except RecordNotFoundError as exc:
+            raise _error("track_not_found", "Track not found", 404) from exc
+        if path is None:
+            raise _error("artwork_missing", "This track has no artwork", 404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
     @app.get("/api/tracks/{track_id}/waveform")
     async def track_waveform(track_id: int, _: Guard, core: Runtime) -> dict[str, Any]:
         try:
@@ -350,10 +364,23 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             raise _error("dig_failed", str(exc), 502) from exc
         return DiscoveryResponse(items=[Suggestion(**item) for item in items], demo=demo, message=message)
 
-    @app.post("/api/previews/{video_id}", response_model=PreviewResponse)
-    async def create_preview(video_id: str, _: Guard, core: Runtime) -> PreviewResponse:
+    @app.post("/api/previews/prefetch", response_model=PreviewPrefetchResponse, status_code=202)
+    async def prefetch_previews(payload: PreviewPrefetchRequest, _: Guard, core: Runtime) -> PreviewPrefetchResponse:
         try:
-            return PreviewResponse(**await run_in_threadpool(core.create_preview, video_id))
+            items = await run_in_threadpool(core.prefetch_previews, payload.video_ids)
+            return PreviewPrefetchResponse(items=items)
+        except RuntimeUnavailable as exc:
+            raise _error("preview_unavailable", str(exc), 503) from exc
+
+    @app.get("/api/previews/prefetch", response_model=PreviewPrefetchResponse)
+    async def preview_status(video_ids: str, _: Guard, core: Runtime) -> PreviewPrefetchResponse:
+        values = [value for value in video_ids.split(",") if value]
+        return PreviewPrefetchResponse(items=await run_in_threadpool(core.preview_status, values))
+
+    @app.post("/api/previews/{video_id}", response_model=PreviewResponse)
+    async def create_preview(video_id: str, _: Guard, core: Runtime, mode: str = Query(default="quick", pattern="^(quick|full)$")) -> PreviewResponse:
+        try:
+            return PreviewResponse(**await run_in_threadpool(core.create_preview, video_id, mode))
         except RuntimeUnavailable as exc:
             raise _error("preview_unavailable", str(exc), 503) from exc
         except Exception as exc:

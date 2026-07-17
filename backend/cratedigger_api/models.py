@@ -37,6 +37,8 @@ class Track(ApiModel):
     notes: str | None = None
     tags: list[str] = Field(default_factory=list)
     file_available: bool = False
+    artwork_url: str | None = None
+    output_format: Literal["m4a", "mp3", "wav"] = "m4a"
 
 
 class TrackPage(ApiModel):
@@ -79,6 +81,7 @@ class QueueRequest(ApiModel):
     source_url: HttpUrl
     display_name: str | None = Field(default=None, max_length=500)
     origin: Literal["manual_rip", "digital_crate", "retry"] = "manual_rip"
+    output_format: Literal["m4a", "mp3", "wav"] = "m4a"
     enable_stems: bool = False
     use_ai_metadata: bool = True
     hint_genre: str | None = None
@@ -213,6 +216,22 @@ class PreviewResponse(ApiModel):
     peaks: list[float]
     duration_seconds: float
     partial: bool
+
+
+class PreviewPrefetchRequest(ApiModel):
+    video_ids: list[str] = Field(min_length=1, max_length=24)
+
+
+class PreviewPrefetchItem(ApiModel):
+    video_id: str
+    state: Literal["pending", "downloading", "decoding", "ready", "failed", "cancelled"]
+    percent: float = 0
+    message: str = ""
+    error_message: str | None = None
+
+
+class PreviewPrefetchResponse(ApiModel):
+    items: list[PreviewPrefetchItem]
 
 
 class ExportRequest(ApiModel):

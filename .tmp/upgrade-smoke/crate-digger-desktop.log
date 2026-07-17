@@ -1,0 +1,2 @@
+2026-07-18 01:31:57,402 INFO     cratedigger.web.config             No config at C:\Projects\crate-digger-web\.tmp\upgrade-smoke\config.json — starting with defaults.
+2026-07-18 01:31:57,416 INFO     cratedigger.web.db                 Initialized vault.db schema v2

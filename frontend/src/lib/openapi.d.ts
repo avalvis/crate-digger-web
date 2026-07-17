@@ -125,6 +125,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tracks/{track_id}/artwork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Track Artwork */
+        get: operations["track_artwork_api_tracks__track_id__artwork_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tracks/{track_id}/waveform": {
         parameters: {
             query?: never;
@@ -273,6 +290,24 @@ export interface paths {
         put?: never;
         /** Dig */
         post: operations["dig_api_discovery_dig_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/previews/prefetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview Status */
+        get: operations["preview_status_api_previews_prefetch_get"];
+        put?: never;
+        /** Prefetch Previews */
+        post: operations["prefetch_previews_api_previews_prefetch_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -547,6 +582,38 @@ export interface components {
             /** Engine Error */
             engine_error?: string | null;
         };
+        /** PreviewPrefetchItem */
+        PreviewPrefetchItem: {
+            /** Video Id */
+            video_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "downloading" | "decoding" | "ready" | "failed" | "cancelled";
+            /**
+             * Percent
+             * @default 0
+             */
+            percent: number;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Error Message */
+            error_message?: string | null;
+        };
+        /** PreviewPrefetchRequest */
+        PreviewPrefetchRequest: {
+            /** Video Ids */
+            video_ids: string[];
+        };
+        /** PreviewPrefetchResponse */
+        PreviewPrefetchResponse: {
+            /** Items */
+            items: components["schemas"]["PreviewPrefetchItem"][];
+        };
         /** PreviewResponse */
         PreviewResponse: {
             /** Video Id */
@@ -645,6 +712,12 @@ export interface components {
              * @enum {string}
              */
             origin: "manual_rip" | "digital_crate" | "retry";
+            /**
+             * Output Format
+             * @default m4a
+             * @enum {string}
+             */
+            output_format: "m4a" | "mp3" | "wav";
             /**
              * Enable Stems
              * @default false
@@ -796,6 +869,14 @@ export interface components {
              * @default false
              */
             file_available: boolean;
+            /** Artwork Url */
+            artwork_url?: string | null;
+            /**
+             * Output Format
+             * @default m4a
+             * @enum {string}
+             */
+            output_format: "m4a" | "mp3" | "wav";
         };
         /** TrackPage */
         TrackPage: {
@@ -1146,6 +1227,42 @@ export interface operations {
         };
     };
     track_audio_api_tracks__track_id__audio_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                track_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    track_artwork_api_tracks__track_id__artwork_get: {
         parameters: {
             query?: {
                 token?: string | null;
@@ -1540,9 +1657,83 @@ export interface operations {
             };
         };
     };
+    preview_status_api_previews_prefetch_get: {
+        parameters: {
+            query: {
+                video_ids: string;
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewPrefetchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prefetch_previews_api_previews_prefetch_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewPrefetchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewPrefetchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_preview_api_previews__video_id__post: {
         parameters: {
             query?: {
+                mode?: string;
                 token?: string | null;
             };
             header?: {

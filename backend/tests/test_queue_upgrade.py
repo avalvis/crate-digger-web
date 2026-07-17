@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -193,7 +194,9 @@ def test_stem_warning_keeps_track_and_retry_skips_ingestion(tmp_path: Path) -> N
             display_name="Rare Artist — Dusty Loop",
             origin="digital_crate",
             enable_stems=True,
+            output_format="mp3",
         ))
+        assert json.loads(db.get_queue_job(job_id).request_payload or "{}")["output_format"] == "mp3"
         warning = wait_for_status(db, job_id, {"complete_with_warnings"})
         assert warning.track_id == track_id
         assert warning.failure_stage == "separating_stems"

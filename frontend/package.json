@@ -16,9 +16,10 @@
     "desktop:check": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/desktop.ps1 check"
   },
   "dependencies": {
+    "@tanstack/react-query": "latest",
     "@tauri-apps/api": "latest",
     "@tauri-apps/plugin-dialog": "latest",
-    "@tanstack/react-query": "latest",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "clsx": "latest",
     "lucide-react": "latest",
     "radix-ui": "latest",

@@ -1,6 +1,6 @@
 import { FormEvent, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link2, Plus, Sparkles } from 'lucide-react'
+import { FileAudio, Link2, Plus, Sparkles } from 'lucide-react'
 import { Switch } from 'radix-ui'
 import { api } from '../lib/api'
 import { useToastStore } from '../store/toast'
@@ -9,10 +9,11 @@ export function ManualRip() {
   const [url, setUrl] = useState('')
   const [stems, setStems] = useState(false)
   const [ai, setAi] = useState(true)
+  const [format, setFormat] = useState<'m4a' | 'mp3' | 'wav'>('m4a')
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
   const queue = useMutation({
-    mutationFn: () => api.enqueue({ source_url: url, origin: 'manual_rip', enable_stems: stems, use_ai_metadata: ai }),
+    mutationFn: () => api.enqueue({ source_url: url, origin: 'manual_rip', output_format: format, enable_stems: stems, use_ai_metadata: ai }),
     onSuccess: () => { setUrl(''); toast('Rip added to the queue', 'success'); queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
     onError: (error) => toast(error.message, 'error'),
   })
@@ -25,11 +26,16 @@ export function ManualRip() {
         <p>Crate Digger downloads the cleanest available audio, analyzes tempo and key, embeds metadata, and files it into your local vault.</p>
         <form onSubmit={submit}>
           <label className="url-field"><span>Source URL</span><input type="url" required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://youtube.com/watch?v=…" /></label>
+          <fieldset className="format-picker"><legend>Vault audio format</legend>{([
+            ['m4a', 'M4A', 'Fastest · native YouTube audio'],
+            ['mp3', 'MP3', '320 kbps · universal'],
+            ['wav', 'WAV', '44.1 kHz · 16-bit PCM'],
+          ] as const).map(([value, label, note]) => <label key={value} className={format === value ? 'active' : ''}><input type="radio" name="format" value={value} checked={format === value} onChange={() => setFormat(value)} /><FileAudio size={17} /><span><strong>{label}</strong><small>{note}</small></span></label>)}</fieldset>
           <div className="rip-options">
             <label><Switch.Root className="switch" checked={ai} onCheckedChange={setAi}><Switch.Thumb /></Switch.Root><span><strong>AI metadata</strong><small>Recover artist and title from messy uploads</small></span></label>
             <label><Switch.Root className="switch" checked={stems} onCheckedChange={setStems}><Switch.Thumb /></Switch.Root><span><strong>Separate stems</strong><small>Run Demucs after ingestion</small></span></label>
           </div>
-          <button className="button button--primary button--large" disabled={queue.isPending}><Plus size={18} /> {queue.isPending ? 'Starting engine…' : 'Queue this track'}</button>
+          <button className="button button--primary button--large" disabled={queue.isPending}><Plus size={18} /> {queue.isPending ? 'Starting engine…' : `Queue as ${format.toUpperCase()}`}</button>
         </form>
         <div className="engine-note"><Sparkles size={16} /><span>The media engine loads only when the first job starts. The interface stays fast even when Demucs is installed.</span></div>
       </section>

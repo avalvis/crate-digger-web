@@ -116,6 +116,8 @@ class EngineRuntime:
         self._pipeline: Any = None
         self._discovery: Any = None
         self._preview: Any = None
+        self._preview_prefetch: Any = None
+        self._metadata: Any = None
         self._exporter: Any = None
         self._media_error: str | None = None
         self._preview_paths: dict[str, Path] = {}
@@ -129,6 +131,8 @@ class EngineRuntime:
         return self._media_error
 
     def close(self) -> None:
+        if self._preview_prefetch is not None:
+            self._preview_prefetch.shutdown(cancel_pending=True)
         if self._queue is not None:
             self._queue.shutdown(timeout=8, cancel_in_flight=True)
         self.db.close()
@@ -148,6 +152,7 @@ class EngineRuntime:
                 from core.metadata import MetadataWriter
                 from core.pipeline import IngestionPipeline
                 from core.preview import PreviewService
+                from core.preview_prefetch import PreviewPrefetchService
                 from core.queue_manager import QueueManager
                 from core.stems import StemModel, StemSeparator
                 from utils.ffmpeg_setup import provision_ffmpeg
@@ -185,6 +190,7 @@ class EngineRuntime:
                     database=self.db,
                     vault_root=Path(snap.config.general.vault_root).expanduser(),
                     staging_root=Path(snap.config.general.staging_root).expanduser(),
+                    ffmpeg_path=binaries.ffmpeg_path,
                     ai_enricher=enricher,
                     folder_scheme=snap.config.general.vault_folder_scheme,
                     logger=self.log.getChild("pipeline"),
@@ -202,6 +208,16 @@ class EngineRuntime:
                     cache_dir=self.data_dir / "preview_cache",
                     logger=self.log.getChild("preview"),
                 )
+                self._preview.clear_stale_cache(max_age_days=14)
+                self._preview_prefetch = PreviewPrefetchService(
+                    self._preview,
+                    max_workers=1,
+                    keep_decoded=True,
+                    logger=self.log.getChild("preview_prefetch"),
+                )
+                self._preview_prefetch.subscribe(self._publish_preview_event, weak=False)
+                self._preview_prefetch.start()
+                self._metadata = metadata
                 self._exporter = MPCExporter(
                     ffmpeg_path=binaries.ffmpeg_path,
                     target_sample_rate=snap.config.export.sample_rate,
@@ -264,6 +280,13 @@ class EngineRuntime:
                 payload["job"] = None
         self.events.publish(payload)
 
+    def _publish_preview_event(self, event: Any) -> None:
+        payload = dataclasses.asdict(event)
+        payload.pop("data", None)
+        payload["type"] = f"preview_{event.type.value}"
+        payload["state"] = event.state.value
+        self.events.publish(payload)
+
     def cancel_job(self, job_id: int) -> bool:
         if self._queue is not None:
             return bool(self._queue.cancel(job_id))
@@ -286,9 +309,30 @@ class EngineRuntime:
         suggestions = engine.dig_many(DiscoveryFilters(**values), count=count)
         return ([dataclasses.asdict(item) for item in suggestions], False, None)
 
-    def create_preview(self, video_id: str) -> dict[str, Any]:
+    def prefetch_previews(self, video_ids: list[str]) -> list[dict[str, object]]:
         self.ensure_media_engine()
-        data = self._preview.fetch_quick(video_id)
+        normalized = [self._preview.normalize_video_id(value) for value in video_ids if value]
+        self._preview_prefetch.cancel_batch()
+        self._preview_prefetch.enqueue_batch(normalized)
+        return self._preview_prefetch.get_status(normalized)
+
+    def preview_status(self, video_ids: list[str]) -> list[dict[str, object]]:
+        self.ensure_media_engine()
+        return self._preview_prefetch.get_status(video_ids)
+
+    def create_preview(self, video_id: str, mode: str = "quick") -> dict[str, Any]:
+        self.ensure_media_engine()
+        if mode == "full":
+            self._preview_prefetch.prioritize(video_id)
+            self._preview_prefetch.wait_ready(video_id, timeout=90)
+            data = self._preview.fetch(video_id)
+        else:
+            data = self._preview_prefetch.get_decoded(video_id)
+            if data is None:
+                self._preview_prefetch.prioritize(video_id)
+                data = self._preview_prefetch.wait_ready(video_id, timeout=90)
+            if data is None:
+                data = self._preview.fetch_quick(video_id)
         if data.source_path is None:
             raise RuntimeUnavailable("Preview audio was not cached")
         self._preview_paths[video_id] = data.source_path
@@ -305,8 +349,25 @@ class EngineRuntime:
         if path and path.exists():
             return path
         if self._preview is not None:
-            return self._preview.get_quick_cached_path(video_id) or self._preview.get_cached_path(video_id)
+            return self._preview.get_cached_path(video_id) or self._preview.get_quick_cached_path(video_id)
         return None
+
+    def track_artwork_path(self, track_id: int) -> Path | None:
+        track = self.db.get_track(track_id)
+        audio_path = Path(track.file_path)
+        cover = audio_path.parent / "cover.jpg"
+        if cover.exists() and cover.stat().st_size > 0:
+            return cover
+        if not audio_path.exists() or not track.artwork_embedded:
+            return None
+        self.ensure_media_engine()
+        artwork = self._metadata.read_artwork(audio_path)
+        if not artwork:
+            return None
+        partial = cover.with_suffix(".jpg.partial")
+        partial.write_bytes(artwork)
+        os.replace(partial, cover)
+        return cover
 
     def waveform_for_track(self, track_id: int) -> dict[str, Any]:
         cache = self.data_dir / "waveforms"

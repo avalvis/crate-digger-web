@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { api, connectEvents } from './lib/api'
 import type { QueuePage } from './lib/types'
+import { useDigitalCrateStore } from './store/digitalCrate'
 import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { PlayerBar } from './components/PlayerBar'
@@ -24,6 +25,15 @@ export default function App() {
     let disconnect: (() => void) | undefined
     let disposed = false
     connectEvents((event) => {
+      if (event.type.startsWith('preview_') && event.video_id && event.state) {
+        useDigitalCrateStore.getState().updatePreview({
+          video_id: event.video_id,
+          state: event.state,
+          percent: event.percent || 0,
+          message: event.message || '',
+          error_message: event.error_message || null,
+        })
+      }
       if (event.job) {
         queryClient.setQueryData<QueuePage>(['jobs', 'queue'], (page) => {
           if (!page) return page
@@ -35,7 +45,11 @@ export default function App() {
       }
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       if (event.type === 'job_completed' || event.type === 'job_completed_with_warnings') queryClient.invalidateQueries({ queryKey: ['tracks'] })
-    }, () => queryClient.invalidateQueries({ queryKey: ['jobs'] })).then((value) => {
+    }, () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      const ids = useDigitalCrateStore.getState().items.map((item) => item.youtube_video_id).filter((value): value is string => !!value)
+      if (ids.length) api.previewStatus(ids).then((result) => useDigitalCrateStore.getState().setPreviewItems(result.items)).catch(() => undefined)
+    }).then((value) => {
       if (disposed) value()
       else disconnect = value
     })
@@ -61,7 +75,7 @@ export default function App() {
           </Routes>
         </main>
       </div>
-      <PlayerBar />
+      <PlayerBar onQueue={() => setQueueOpen(true)} />
       <QueuePanel open={queueOpen} onOpenChange={setQueueOpen} queue={jobs.data} />
       <Toast />
     </div>

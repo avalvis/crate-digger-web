@@ -14,3 +14,17 @@ export async function pickDirectory(defaultPath?: string): Promise<string | null
   return typeof selected === 'string' ? selected : null
 }
 
+export async function openExternal(url: string) {
+  if (window.__TAURI_INTERNALS__) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener')
+    await openUrl(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+export async function openFolder(path: string) {
+  if (!window.__TAURI_INTERNALS__) throw new Error('Opening folders is available in the desktop app.')
+  const { openPath } = await import('@tauri-apps/plugin-opener')
+  await openPath(path)
+}

@@ -19,6 +19,8 @@ export interface Track {
   notes: string | null
   tags: string[]
   file_available: boolean
+  artwork_url: string | null
+  output_format: 'm4a' | 'mp3' | 'wav'
 }
 
 export interface TrackPage { items: Track[]; total: number; limit: number; offset: number }
@@ -111,6 +113,16 @@ export interface PreviewResponse {
   partial: boolean
 }
 
+export interface PreviewPrefetchItem {
+  video_id: string
+  state: 'pending' | 'downloading' | 'decoding' | 'ready' | 'failed' | 'cancelled'
+  percent: number
+  message: string
+  error_message: string | null
+}
+
+export interface PreviewPrefetchResponse { items: PreviewPrefetchItem[] }
+
 export interface QueueEvent {
   type: string
   job_id?: number
@@ -120,4 +132,7 @@ export interface QueueEvent {
   error_message?: string
   track_id?: number
   job?: QueueJob | null
+  video_id?: string
+  state?: PreviewPrefetchItem['state']
+  percent?: number
 }

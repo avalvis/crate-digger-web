@@ -39,7 +39,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from mutagen.id3 import (
+    APIC, COMM, TALB, TBPM, TCON, TDRC, TKEY, TIT2, TPE1, TPE2, TXXX,
+    WOAS,
+)
+from mutagen.mp3 import MP3, HeaderNotFoundError
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm, MP4StreamInfoError
+from mutagen.wave import WAVE, error as WaveError
 
 # Optional import — `core.analyzer` will provide key/Camelot conversion
 # but we don't want a hard dependency at import time. Local import at
@@ -147,9 +153,10 @@ class MetadataWriter:
         file_path = Path(file_path)
         if not file_path.exists():
             raise MetadataFileError(f"File does not exist: {file_path}")
-        if file_path.suffix.lower() not in (".m4a", ".mp4"):
+        suffix = file_path.suffix.lower()
+        if suffix not in (".m4a", ".mp4", ".mp3", ".wav"):
             raise MetadataFileError(
-                f"Unsupported extension {file_path.suffix!r}; expected .m4a/.mp4"
+                f"Unsupported extension {file_path.suffix!r}; expected M4A, MP3, or WAV"
             )
 
         bytes_before = file_path.stat().st_size
@@ -161,11 +168,15 @@ class MetadataWriter:
             raise MetadataFileError(f"Could not create backup: {e}") from e
 
         try:
-            audio = self._open(file_path)
-            written = self._write_fields(audio, tags)
+            if suffix in (".m4a", ".mp4"):
+                audio = self._open(file_path)
+                written = self._write_fields(audio, tags)
+            else:
+                audio = self._open_id3(file_path)
+                written = self._write_id3_fields(audio, tags)
             try:
-                audio.save()
-            except (OSError, MP4StreamInfoError) as e:
+                audio.save(v2_version=3) if suffix == ".mp3" else audio.save()
+            except (OSError, MP4StreamInfoError, HeaderNotFoundError, WaveError) as e:
                 raise MetadataWriteError(f"mutagen save failed: {e}") from e
 
             bytes_after = file_path.stat().st_size
@@ -201,7 +212,10 @@ class MetadataWriter:
         and by the Vault tab's 'inspect tags' debug panel. Returns a
         human-friendly dict — not the raw mutagen structures.
         """
-        audio = self._open(Path(file_path))
+        file_path = Path(file_path)
+        if file_path.suffix.lower() in (".mp3", ".wav"):
+            return self._read_id3(file_path)
+        audio = self._open(file_path)
         out: dict[str, object] = {}
 
         def first(atom: str) -> Optional[str]:
@@ -240,6 +254,17 @@ class MetadataWriter:
 
         return out
 
+    def read_artwork(self, file_path: Path) -> Optional[bytes]:
+        """Return embedded cover bytes for every supported Vault format."""
+        path = Path(file_path)
+        if path.suffix.lower() in (".m4a", ".mp4"):
+            audio = self._open(path)
+            covers = audio.tags.get(_ATOM_COVER) if audio.tags else None
+            return bytes(covers[0]) if covers else None
+        audio = self._open_id3(path)
+        covers = audio.tags.getall("APIC") if audio.tags else []
+        return bytes(covers[0].data) if covers else None
+
     # ── Internal ──
 
     def _open(self, path: Path) -> MP4:
@@ -254,6 +279,87 @@ class MetadataWriter:
             # File has no tag atom yet; add an empty one so assignment works.
             audio.add_tags()
         return audio
+
+    def _open_id3(self, path: Path) -> MP3 | WAVE:
+        try:
+            audio: MP3 | WAVE = MP3(str(path)) if path.suffix.lower() == ".mp3" else WAVE(str(path))
+        except (HeaderNotFoundError, WaveError, OSError, ValueError) as e:
+            raise MetadataFileError(f"Could not open {path}: {e}") from e
+        if audio.tags is None:
+            audio.add_tags()
+        return audio
+
+    def _write_id3_fields(self, audio: MP3 | WAVE, t: TrackTags) -> list[str]:
+        """Write an interoperable ID3v2.3 subset to MP3 and WAV containers."""
+        tags = audio.tags
+        if tags is None:  # defensive; _open_id3 always creates it
+            audio.add_tags()
+            tags = audio.tags
+        assert tags is not None
+        written: list[str] = []
+
+        def replace(frame_id: str, frame: object | None) -> None:
+            if frame is None:
+                return
+            tags.delall(frame_id)
+            tags.add(frame)  # type: ignore[arg-type]
+            written.append(frame_id)
+
+        def text(value: Optional[str]) -> list[str] | None:
+            cleaned = (value or "").strip()
+            return [cleaned] if cleaned else None
+
+        replace("TIT2", TIT2(encoding=3, text=text(t.title)) if text(t.title) else None)
+        replace("TPE1", TPE1(encoding=3, text=text(t.artist)) if text(t.artist) else None)
+        replace("TALB", TALB(encoding=3, text=text(t.album)) if text(t.album) else None)
+        replace("TPE2", TPE2(encoding=3, text=text(t.album_artist)) if text(t.album_artist) else None)
+        replace("TCON", TCON(encoding=3, text=text(t.genre)) if text(t.genre) else None)
+        replace("TDRC", TDRC(encoding=3, text=[str(int(t.year))]) if t.year is not None else None)
+        replace("TBPM", TBPM(encoding=3, text=[str(int(round(t.bpm)))]) if t.bpm is not None else None)
+        replace("TKEY", TKEY(encoding=3, text=text(t.musical_key)) if text(t.musical_key) else None)
+        replace("COMM", COMM(encoding=3, lang="eng", desc="", text=text(t.comment)) if text(t.comment) else None)
+        if t.camelot_key:
+            tags.delall("TXXX:CAMELOT")
+            tags.add(TXXX(encoding=3, desc="CAMELOT", text=[t.camelot_key.strip()]))
+            written.append("TXXX:CAMELOT")
+        if t.source_url:
+            tags.delall("WOAS")
+            tags.add(WOAS(url=t.source_url))
+            written.append("WOAS")
+        if t.artwork_jpeg:
+            tags.delall("APIC")
+            tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=t.artwork_jpeg))
+            written.append("APIC")
+        return written
+
+    def _read_id3(self, path: Path) -> dict[str, object]:
+        audio = self._open_id3(path)
+        tags = audio.tags
+        out: dict[str, object] = {}
+
+        def first(frame_id: str) -> Optional[str]:
+            frames = tags.getall(frame_id) if tags else []
+            if not frames:
+                return None
+            values = getattr(frames[0], "text", None)
+            return str(values[0]) if values else None
+
+        out.update({
+            "title": first("TIT2"), "artist": first("TPE1"),
+            "album": first("TALB"), "album_artist": first("TPE2"),
+            "genre": first("TCON"), "year": first("TDRC"),
+            "bpm": first("TBPM"), "musical_key": first("TKEY"),
+        })
+        camelot = tags.getall("TXXX:CAMELOT") if tags else []
+        out["camelot_key"] = str(camelot[0].text[0]) if camelot and camelot[0].text else None
+        covers = tags.getall("APIC") if tags else []
+        out["artwork_bytes"] = len(covers[0].data) if covers else 0
+        if audio.info:
+            out["duration_seconds"] = float(audio.info.length or 0.0)
+            out["bitrate_bps"] = int(getattr(audio.info, "bitrate", 0) or 0)
+            out["sample_rate_hz"] = int(getattr(audio.info, "sample_rate", 0) or 0)
+            out["channels"] = int(getattr(audio.info, "channels", 0) or 0)
+        return out
 
     def _write_fields(self, audio: MP4, t: TrackTags) -> list[str]:
         """

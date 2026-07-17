@@ -35,8 +35,10 @@ where a file lives on disk.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -126,6 +128,7 @@ class PipelineRequest:
     source_url: str
     display_name: Optional[str] = None
     origin: str = "manual_rip"
+    output_format: str = "m4a"
     enable_stems: bool = False
     stem_model: StemModel = StemModel.HTDEMUCS
     # Per-download AI metadata flag. When True (and the pipeline was
@@ -213,6 +216,7 @@ class IngestionPipeline:
         database: VaultDatabase,
         vault_root: Path,
         staging_root: Path,
+        ffmpeg_path: str = "ffmpeg",
         ai_enricher: Optional[_AiEnricher] = None,
         folder_scheme: str = "date/artist_title",
         logger: Optional[logging.Logger] = None,
@@ -225,6 +229,7 @@ class IngestionPipeline:
         self._db = database
         self._vault_root = Path(vault_root)
         self._staging_root = Path(staging_root)
+        self._ffmpeg = str(ffmpeg_path)
         self._ai_enricher = ai_enricher
         self._folder_scheme = folder_scheme
         self._log = logger or logging.getLogger("cratedigger.pipeline")
@@ -318,19 +323,23 @@ class IngestionPipeline:
                 resolved_artist,
                 resolved_title,
             )
-            self._meta.apply(download.audio_path, tags)
+            output_audio = self._prepare_output_format(
+                download.audio_path, request.output_format, job_staging, cancel_event,
+            )
+            self._meta.apply(output_audio, tags)
             progress.emit(100.0, "Metadata embedded")
 
             # ── 5. RELOCATE ──
             self._check_cancel(cancel_event)
             progress.enter(PipelineStage.RELOCATING, "Filing track in vault")
             final_audio_path, track_dir = self._relocate_to_vault(
-                src=download.audio_path,
+                src=output_audio,
                 genre=request.hint_genre,
                 bpm=analysis.bpm,
                 camelot_key=analysis.camelot_key,
                 artist=resolved_artist,
                 title=resolved_title,
+                artwork=artwork_bytes,
             )
             progress.emit(100.0, f"Filed: {final_audio_path.parent.name}")
 
@@ -344,6 +353,7 @@ class IngestionPipeline:
                 request,
                 resolved_artist,
                 resolved_title,
+                artwork_bytes is not None,
             )
             progress.emit(100.0, f"Indexed (id={track_id})")
 
@@ -695,6 +705,47 @@ class IngestionPipeline:
 
     # ── Filesystem relocation ──
 
+    def _prepare_output_format(
+        self,
+        source: Path,
+        output_format: str,
+        staging: Path,
+        cancel_event: Optional[threading.Event],
+    ) -> Path:
+        fmt = (output_format or "m4a").lower()
+        if fmt not in {"m4a", "mp3", "wav"}:
+            raise PipelineError(f"Unsupported output format: {output_format}")
+        if fmt == "m4a":
+            return source
+        self._check_cancel(cancel_event)
+        partial = staging / f"converted.partial.{fmt}"
+        final = staging / f"converted.{fmt}"
+        codec = ["-c:a", "libmp3lame", "-b:a", "320k"] if fmt == "mp3" else [
+            "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "2",
+        ]
+        command = [
+            self._ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(source), "-map", "0:a:0", "-map_metadata", "-1",
+            "-vn", *codec, str(partial),
+        ]
+        kwargs: dict[str, int] = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=600, **kwargs)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            partial.unlink(missing_ok=True)
+            raise PipelineError(f"Could not create {fmt.upper()} output: {exc}") from exc
+        self._check_cancel(cancel_event)
+        if result.returncode != 0 or not partial.exists() or partial.stat().st_size < 128:
+            partial.unlink(missing_ok=True)
+            detail = (result.stderr or "FFmpeg produced no valid audio").strip()
+            raise PipelineError(f"Could not create {fmt.upper()} output: {detail[-500:]}")
+        with partial.open("r+b") as handle:
+            os.fsync(handle.fileno())
+        os.replace(partial, final)
+        return final
+
     def _relocate_to_vault(
         self,
         *,
@@ -704,6 +755,7 @@ class IngestionPipeline:
         camelot_key: Optional[str],
         artist: str,
         title: str,
+        artwork: Optional[bytes],
     ) -> tuple[Path, Path]:
         """
         Move `src` into the vault using the configured folder scheme.
@@ -738,18 +790,20 @@ class IngestionPipeline:
             f"{artist} - {title}",
             max_length=180,
         )
-        dest = track_dir / f"{filename}.m4a"
+        dest = track_dir / f"{filename}{src.suffix.lower()}"
 
         # Cross-filesystem move — shutil.move handles the copy+delete
         # fallback when staging and vault are on different drives.
         try:
             shutil.move(str(src), str(dest))
+            if artwork:
+                cover_partial = track_dir / "cover.jpg.partial"
+                cover_partial.write_bytes(artwork)
+                with cover_partial.open("r+b") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(cover_partial, track_dir / "cover.jpg")
         except OSError as e:
-            # Clean up empty track_dir on failure
-            try:
-                track_dir.rmdir()
-            except OSError:
-                pass
+            shutil.rmtree(track_dir, ignore_errors=True)
             raise PipelineError(f"Could not move to vault: {e}") from e
 
         return dest, track_dir
@@ -764,6 +818,7 @@ class IngestionPipeline:
         request: PipelineRequest,
         resolved_artist: str,
         resolved_title: str,
+        artwork_embedded: bool,
     ) -> int:
         file_size = final_path.stat().st_size
         platform = (
@@ -787,7 +842,7 @@ class IngestionPipeline:
             musical_key=analysis.musical_key,
             camelot_key=analysis.camelot_key,
             key_confidence=analysis.key_confidence,
-            artwork_embedded=(download.thumbnail_url is not None),
+            artwork_embedded=artwork_embedded,
             source_url=download.source_url,
             source_platform=platform,
             discogs_master_id=request.hint_discogs_master_id,

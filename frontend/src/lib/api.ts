@@ -3,6 +3,7 @@ import type {
   Crate,
   DiscoveryResponse,
   PreviewResponse,
+  PreviewPrefetchResponse,
   QueueEvent,
   QueueJob,
   QueuePage,
@@ -113,7 +114,15 @@ export const api = {
   deleteJobHistory: () => request<{ affected: number }>('/api/jobs/history', { method: 'DELETE' }),
   dig: (values: Record<string, unknown>) =>
     request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }, 180_000),
-  preview: (videoId: string) => request<PreviewResponse>(`/api/previews/${videoId}`, { method: 'POST' }),
+  preview: (videoId: string, mode: 'quick' | 'full' = 'quick') =>
+    request<PreviewResponse>(`/api/previews/${videoId}?mode=${mode}`, { method: 'POST' }, mode === 'full' ? 300_000 : 120_000),
+  prefetchPreviews: (videoIds: string[]) => request<PreviewPrefetchResponse>('/api/previews/prefetch', {
+    method: 'POST', body: JSON.stringify({ video_ids: videoIds }),
+  }, 180_000),
+  previewStatus: (videoIds: string[]) => request<PreviewPrefetchResponse>(
+    `/api/previews/prefetch?video_ids=${encodeURIComponent(videoIds.join(','))}`,
+  ),
+  trackWaveform: (id: number) => request<{ peaks: number[]; duration_seconds: number }>(`/api/tracks/${id}/waveform`),
   crates: () => request<Crate[]>('/api/crates'),
   createCrate: (name: string, description?: string) =>
     request<Crate>('/api/crates', { method: 'POST', body: JSON.stringify({ name, description }) }),
