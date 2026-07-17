@@ -270,7 +270,7 @@ class DiscoveryEngine:
     """
 
     DISCOGS_BASE = "https://api.discogs.com"
-    USER_AGENT = "CrateDigger/0.1 +https://github.com/josh/cratedigger"
+    USER_AGENT = "CrateDiggerDesktop/0.2 +https://github.com/avalvis/crate-digger-web"
 
     # Max pages of Discogs search results to fetch per Dig. Discogs
     # returns 50 per page. Narrow-filter digs (country, era range, etc.)

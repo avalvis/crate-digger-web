@@ -171,6 +171,7 @@ class StemSeparator:
         self._device_pref = device
         self._ffmpeg_path = ffmpeg_path
         self._python = python_executable or sys.executable
+        self._frozen_worker = bool(getattr(sys, "frozen", False)) and python_executable is None
         self._log = logger or logging.getLogger("cratedigger.stems")
         # Demucs saturates the CPU and consumes substantial RAM. Running two
         # instances together makes both dramatically slower and can make the
@@ -208,10 +209,15 @@ class StemSeparator:
             "'python': sys.version.split()[0]"
             "}))\n"
         )
+        command = (
+            [self._python, "--internal-runtime-probe"]
+            if self._frozen_worker
+            else [self._python, "-c", script]
+        )
 
         try:
             result = subprocess.run(
-                [self._python, "-c", script],
+                command,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -292,9 +298,13 @@ class StemSeparator:
                 shutil.rmtree(staging_root, ignore_errors=True)
             staging_root.mkdir(parents=True, exist_ok=True)
 
+            prefix = (
+                [self._python, "--internal-demucs"]
+                if self._frozen_worker
+                else [self._python, "-c", _DEMUCS_RUNNER]
+            )
             cmd = [
-                self._python,
-                "-c", _DEMUCS_RUNNER,
+                *prefix,
                 "-n", active_model.value,
                 "-d", device,
                 "-o", str(staging_root),
@@ -423,9 +433,14 @@ class StemSeparator:
 
     def _python_module_check(self, module_name: str) -> tuple[bool, str]:
         """Check if a module can be imported by the demucs interpreter."""
+        command = (
+            [self._python, "--internal-import-probe", module_name]
+            if self._frozen_worker
+            else [self._python, "-c", f"import {module_name}"]
+        )
         try:
             result = subprocess.run(
-                [self._python, "-c", f"import {module_name}"],
+                command,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -673,6 +688,10 @@ class StemSeparator:
         # when the Windows console codec is CP1252.
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        # A frozen worker dispatches before the API imports, but removing the
+        # listener variables is an additional guard against accidental binds.
+        env.pop("CRATEDIGGER_PORT", None)
+        env.pop("CRATEDIGGER_TOKEN", None)
 
         if not self._ffmpeg_path:
             return env
@@ -720,28 +739,37 @@ class StemSeparator:
                 )
             expected_dir = found[0].parent
 
-        # Collect every .wav produced — works for both 4-stem and 6-stem models.
-        stems: dict[str, Path] = {}
-        for wav in sorted(expected_dir.glob("*.wav")):
-            stem_name = wav.stem.lower()
-            dst = output_dir / f"{stem_name}.wav"
-            if dst.exists():
-                dst.unlink()
-            shutil.move(str(wav), str(dst))
-            stems[stem_name] = dst
-
-        # Verify at minimum the four core stems every model should produce.
-        missing = set(_CORE_STEMS) - set(stems.keys())
+        # Validate the complete Demucs output before touching any published
+        # stems. A failed or interrupted run therefore cannot erase good files.
+        produced = {wav.stem.lower(): wav for wav in sorted(expected_dir.glob("*.wav"))}
+        missing = set(_CORE_STEMS) - set(produced)
         if missing:
             raise StemSeparationFailedError(
                 f"Missing expected stems: {sorted(missing)}"
             )
-        if expect_6 and len(stems) < 6:
+        if expect_6 and len(produced) < 6:
             self._log.warning(
                 "htdemucs_6s produced only %d stems (expected 6): %s",
-                len(stems),
-                list(stems.keys()),
+                len(produced),
+                list(produced.keys()),
             )
+
+        publish_dir = output_dir / "_publish_staging"
+        shutil.rmtree(publish_dir, ignore_errors=True)
+        publish_dir.mkdir(parents=True, exist_ok=True)
+        stems: dict[str, Path] = {}
+        try:
+            for stem_name, wav in produced.items():
+                candidate = publish_dir / f"{stem_name}.wav"
+                shutil.move(str(wav), str(candidate))
+                if candidate.stat().st_size <= 44:
+                    raise StemSeparationFailedError(f"Empty stem output: {stem_name}")
+            for candidate in publish_dir.glob("*.wav"):
+                dst = output_dir / candidate.name
+                os.replace(candidate, dst)
+                stems[candidate.stem.lower()] = dst
+        finally:
+            shutil.rmtree(publish_dir, ignore_errors=True)
         return stems
 
     # ── Device resolution ──

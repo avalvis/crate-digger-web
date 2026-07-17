@@ -12,7 +12,7 @@ export function ManualRip() {
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
   const queue = useMutation({
-    mutationFn: () => api.enqueue({ source_url: url, enable_stems: stems, use_ai_metadata: ai }),
+    mutationFn: () => api.enqueue({ source_url: url, origin: 'manual_rip', enable_stems: stems, use_ai_metadata: ai }),
     onSuccess: () => { setUrl(''); toast('Rip added to the queue', 'success'); queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
     onError: (error) => toast(error.message, 'error'),
   })
@@ -36,4 +36,3 @@ export function ManualRip() {
     </div>
   )
 }
-

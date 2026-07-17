@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { DropdownMenu } from 'radix-ui'
 import { Disc3, ExternalLink, Grid2X2, List, MoreVertical, Play, Plus, RefreshCw, SlidersHorizontal, WandSparkles } from 'lucide-react'
 import { api, mediaUrl } from '../lib/api'
@@ -95,7 +96,8 @@ export function DigitalCrate() {
   const [country, setCountry] = useState('')
   const [genre, setGenre] = useState('')
   const [view, setView] = useState<'list' | 'grid'>('list')
-  const initialDigStarted = useRef(false)
+  const [digRun, setDigRun] = useState(0)
+  const navigate = useNavigate()
   const setPlayer = usePlayerStore((state) => state.setTrack)
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
@@ -109,13 +111,19 @@ export function DigitalCrate() {
     allow_compilations: false, count: 8,
   }), [profile, era, country, genre])
 
-  const dig = useMutation({
-    mutationFn: () => api.dig(filters),
-    onError: (error) => toast(error.message, 'error'),
+  const config = useQuery({ queryKey: ['config'], queryFn: api.config })
+  const dig = useQuery({
+    queryKey: ['digital-crate-dig', digRun],
+    queryFn: () => api.dig(filters),
+    enabled: digRun > 0,
+    retry: false,
+    staleTime: Infinity,
   })
   const enqueue = useMutation({
     mutationFn: ({ item, stems }: { item: Suggestion; stems: boolean }) => api.enqueue({
       source_url: item.youtube_url,
+      display_name: `${item.artist} — ${item.title}`,
+      origin: 'digital_crate',
       enable_stems: stems,
       hint_genre: item.genre,
       hint_country: item.country,
@@ -143,13 +151,25 @@ export function DigitalCrate() {
     onError: (error) => toast(error.message, 'error'),
   })
 
+  // A query owns the initial request lifecycle. This is intentionally not a
+  // mutation fired from a mount effect: React Strict Mode can remount effects
+  // during development and leave that mutation observer looking permanently
+  // pending even though the API already returned successfully.
   useEffect(() => {
-    if (initialDigStarted.current) return
-    initialDigStarted.current = true
-    dig.mutate()
-  }, [])
+    if (config.data?.has_discogs_token) setDigRun((current) => current || 1)
+  }, [config.data?.has_discogs_token])
+
+  const startDig = () => {
+    if (!config.data?.has_discogs_token) {
+      navigate('/settings')
+      return
+    }
+    setDigRun((current) => current + 1)
+  }
   const items = dig.data?.items || []
   const featured = items[0]
+  const digging = dig.isFetching
+  const needsDiscogs = config.isSuccess && !config.data.has_discogs_token
   const busy = enqueue.isPending || preview.isPending
   const queue = (item: Suggestion, stems = false) => enqueue.mutate({ item, stems })
 
@@ -161,20 +181,22 @@ export function DigitalCrate() {
           <label>Era<select value={era} onChange={(event) => setEra(Number(event.target.value))}>{eras.map(([label], index) => <option key={label} value={index}>{label}</option>)}</select></label>
           <label>Country<select value={country} onChange={(event) => setCountry(event.target.value)}><option value="">World roulette</option>{countries.slice(1).map((value) => <option key={value}>{value}</option>)}</select></label>
           <label>Genre override<select value={genre} onChange={(event) => setGenre(event.target.value)}><option value="">Let the lens choose</option><option>Funk / Soul</option><option>Jazz</option><option>Latin</option><option>Stage & Screen</option><option>Reggae</option><option>Folk, World, & Country</option><option>Rock</option><option>Electronic</option></select></label>
-          <button className="button button--primary dig-button" onClick={() => dig.mutate()} disabled={dig.isPending}><RefreshCw size={16} className={dig.isPending ? 'spin' : ''} /> {dig.isPending ? 'Digging several crates…' : 'Dig for gems'}</button>
+          <button className="button button--primary dig-button" onClick={startDig} disabled={config.isPending || config.isError || digging}><RefreshCw size={16} className={digging ? 'spin' : ''} /> {digging ? 'Digging several crates…' : needsDiscogs ? 'Add Discogs token' : 'Dig for gems'}</button>
         </div>
         <div className="view-switch"><SlidersHorizontal size={16} /><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><List size={18} /></button><button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')}><Grid2X2 size={18} /></button></div>
       </section>
 
-      {dig.isError && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={() => dig.mutate()}>Try again</button></div>}
+      {config.isError && <div className="error-state"><Disc3 size={18} /><span>The local engine did not return its settings.</span><button className="button button--outline" onClick={() => config.refetch()}>Reconnect</button></div>}
+      {needsDiscogs && <div className="notice notice--action"><Disc3 size={18} /><span>This professional profile is clean and independent, so it needs its own Discogs token before it can dig live sampling gems.</span><button className="button button--outline" onClick={() => navigate('/settings')}>Open settings</button></div>}
+      {dig.isError && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={startDig}>Try again</button></div>}
       {dig.data?.message && <div className="notice"><Disc3 size={18} /><span>{dig.data.message}</span></div>}
 
       <section className="featured-dig">
         <button className="featured-dig__signal" disabled={!featured || busy} onClick={() => featured && preview.mutate(featured)} aria-label="Preview featured gem"><Play size={28} fill="currentColor" /></button>
         <div className="featured-dig__copy">
           <span>TOP PULL · {profiles.find(([value]) => value === profile)?.[1]}</span>
-          <h2>{featured?.title || (dig.isPending ? 'Digging across several crates…' : 'Waiting for the next pull')}</h2>
-          <strong>{featured?.artist || 'Crate Digger'}</strong>
+          <h2>{featured?.title || (digging ? 'Digging across several crates…' : needsDiscogs ? 'Connect Discogs to dig live gems' : config.isPending ? 'Starting the local engine…' : 'Waiting for the next pull')}</h2>
+          <strong>{featured?.artist || (needsDiscogs ? 'One-time setup required' : 'Crate Digger')}</strong>
           {featured && <SampleReasons item={featured} />}
           <div className="hero-wave" aria-hidden="true">{Array.from({ length: 72 }).map((_, index) => <i key={index} style={{ height: `${12 + ((index * 19) % 45)}%` }} />)}</div>
           {featured && <div className="featured-dig__actions"><button className="button button--primary" disabled={busy} onClick={() => preview.mutate(featured)}><Play size={14} /> Preview</button><button className="button button--dark" disabled={busy} onClick={() => queue(featured)}><Plus size={14} /> Queue it</button>{featured.discogs_url && <a href={featured.discogs_url} target="_blank" rel="noreferrer">Data provided by Discogs</a>}</div>}

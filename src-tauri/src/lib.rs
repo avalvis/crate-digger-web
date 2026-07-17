@@ -42,11 +42,13 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            let data_dir = app.path().app_local_data_dir()?;
             let command = app
                 .shell()
                 .sidecar("crate-digger-api")?
                 .env("CRATEDIGGER_PORT", port.to_string())
                 .env("CRATEDIGGER_TOKEN", token.clone())
+                .env("CRATEDIGGER_DATA_DIR", data_dir.to_string_lossy().to_string())
                 .env("CRATEDIGGER_PARENT_PID", std::process::id().to_string());
             let (mut events, child) = command.spawn()?;
             tauri::async_runtime::spawn(async move {

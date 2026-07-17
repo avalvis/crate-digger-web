@@ -49,7 +49,7 @@ CONFIG_SCHEMA_VERSION = 1
 
 # Keyring is optional; keeping the import lazy means headless environments
 # without dbus/libsecret (CI, minimal Docker images) don't break app boot.
-_KEYRING_SERVICE = "com.crate-digger.app"
+_KEYRING_SERVICE = "com.cratedigger.desktop"
 _KEYRING_USER_DISCOGS_TOKEN = "discogs_token"
 _KEYRING_USER_DEEPSEEK_KEY  = "deepseek_key"
 
@@ -99,11 +99,15 @@ class GeneralConfig(BaseModel):
     """Top-level app preferences."""
 
     vault_root: str = Field(
-        default_factory=lambda: str(Path.home() / "Music" / "CrateDigger_Vault"),
+        default_factory=lambda: str(Path.home() / "Music" / "Crate Digger Web" / "Vault"),
         description="Filesystem root of the Vault tree.",
     )
     staging_root: str = Field(
-        default_factory=lambda: str(Path.home() / ".cratedigger" / "staging"),
+        default_factory=lambda: str(
+            Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share")
+            / "com.cratedigger.desktop"
+            / "staging"
+        ),
         description="Scratch directory for in-progress pipeline jobs.",
     )
     concurrent_workers: int = Field(
@@ -135,7 +139,7 @@ class GeneralConfig(BaseModel):
         description="Whether a DeepSeek API key is stored in the OS keyring or plaintext fallback.",
     )
     mpc_samples_root: str = Field(
-        default_factory=lambda: str(Path.home() / "Music" / "CrateDigger_MPC"),
+        default_factory=lambda: str(Path.home() / "Music" / "Crate Digger Web" / "MPC Exports"),
         description=(
             "Destination root for the Digital Crate 'MPC Workflow' button — "
             "typically an MPC SD card path. Tracks sent here are split into "

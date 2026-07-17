@@ -1,6 +1,6 @@
 import { Disc3, FolderArchive, ListMusic, Radio, Settings, SlidersHorizontal } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
-import type { QueueJob } from '../lib/types'
+import type { QueueJob, QueueSummary } from '../lib/types'
 import { Brand } from './Brand'
 
 const navigation = [
@@ -11,8 +11,20 @@ const navigation = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
-export function Sidebar({ jobs, onQueue }: { jobs: QueueJob[]; onQueue: () => void }) {
-  const active = jobs.find((job) => !['complete', 'failed', 'cancelled'].includes(job.status))
+const EMPTY_SUMMARY: QueueSummary = { running: 0, waiting: 0, completed: 0, attention: 0, current_job_id: null }
+
+export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue }: { jobs: QueueJob[]; summary?: QueueSummary; onQueue: () => void }) {
+  const active = jobs.find((job) => job.id === summary.current_job_id)
+    || jobs.find((job) => !['pending', 'complete', 'complete_with_warnings', 'failed', 'cancelled'].includes(job.status))
+  const waiting = summary.waiting
+  const hasWork = Boolean(active || waiting)
+  const detail = active
+    ? `${Math.round(active.progress_pct)}% · ${active.status_message || active.current_stage || 'Preparing'}`
+    : waiting
+      ? `${waiting} track${waiting === 1 ? '' : 's'} waiting`
+      : summary.attention
+        ? `${summary.attention} item${summary.attention === 1 ? '' : 's'} need attention`
+        : 'Drop in a track and start digging'
   return (
     <aside className="sidebar">
       <div className="sidebar__top"><Brand /></div>
@@ -27,9 +39,10 @@ export function Sidebar({ jobs, onQueue }: { jobs: QueueJob[]; onQueue: () => vo
       <button className="queue-dock" type="button" onClick={onQueue}>
         <div className="queue-dock__art"><SlidersHorizontal size={28} /></div>
         <div className="queue-dock__body">
-          <span className={`status-dot ${active ? 'status-dot--active' : ''}`} />
-          <strong>{active ? 'QUEUE WORKING' : 'QUEUE IDLE'}</strong>
-          <small>{active ? `${Math.round(active.progress_pct)}% · ${active.current_stage || 'Preparing'}` : 'Drop in a track and start digging'}</small>
+          <span className={`status-dot ${hasWork ? 'status-dot--active' : summary.attention ? 'status-dot--attention' : ''}`} />
+          <strong>{active ? active.display_name || 'QUEUE WORKING' : hasWork ? 'QUEUE WAITING' : summary.attention ? 'QUEUE ATTENTION' : 'QUEUE IDLE'}</strong>
+          <small>{detail}</small>
+          {(summary.running > 0 || summary.waiting > 0) && <div className="queue-dock__counts">{summary.running} running · {summary.waiting} waiting</div>}
         </div>
       </button>
       <div className="sidebar__version">v0.2.1 WEB</div>

@@ -28,14 +28,38 @@ export interface QueueJob {
   source_url: string
   display_name: string | null
   status: string
+  operation: 'ingest' | 'stems'
+  origin: string
   progress_pct: number
+  stage_percent: number
   current_stage: string | null
+  status_message: string | null
   error_message: string | null
+  failure_stage: string | null
   track_id: number | null
   enable_stems: boolean
+  retry_of_job_id: number | null
+  archived_at: string | null
+  queue_position: number | null
   created_at: string | null
   started_at: string | null
   completed_at: string | null
+}
+
+export interface QueueSummary {
+  running: number
+  waiting: number
+  completed: number
+  attention: number
+  current_job_id: number | null
+}
+
+export interface QueuePage {
+  items: QueueJob[]
+  total: number
+  limit: number
+  offset: number
+  summary: QueueSummary
 }
 
 export interface Suggestion {
@@ -95,4 +119,5 @@ export interface QueueEvent {
   message?: string
   error_message?: string
   track_id?: number
+  job?: QueueJob | null
 }

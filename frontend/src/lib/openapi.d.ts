@@ -160,6 +160,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/cancel-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel All Jobs */
+        post: operations["cancel_all_jobs_api_jobs_cancel_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/archive-completed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Completed Jobs */
+        post: operations["archive_completed_jobs_api_jobs_archive_completed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Job History */
+        delete: operations["delete_job_history_api_jobs_history_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Job */
+        post: operations["retry_job_api_jobs__job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Job */
+        post: operations["archive_job_api_jobs__job_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -475,6 +560,11 @@ export interface components {
             /** Partial */
             partial: boolean;
         };
+        /** QueueActionResponse */
+        QueueActionResponse: {
+            /** Affected */
+            affected: number;
+        };
         /** QueueJob */
         QueueJob: {
             /** Id */
@@ -485,22 +575,60 @@ export interface components {
             display_name?: string | null;
             /** Status */
             status: string;
+            /**
+             * Operation
+             * @default ingest
+             * @enum {string}
+             */
+            operation: "ingest" | "stems";
+            /**
+             * Origin
+             * @default manual_rip
+             */
+            origin: string;
             /** Progress Pct */
             progress_pct: number;
+            /**
+             * Stage Percent
+             * @default 0
+             */
+            stage_percent: number;
             /** Current Stage */
             current_stage?: string | null;
+            /** Status Message */
+            status_message?: string | null;
             /** Error Message */
             error_message?: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
             /** Track Id */
             track_id?: number | null;
             /** Enable Stems */
             enable_stems: boolean;
+            /** Retry Of Job Id */
+            retry_of_job_id?: number | null;
+            /** Archived At */
+            archived_at?: string | null;
+            /** Queue Position */
+            queue_position?: number | null;
             /** Created At */
             created_at?: string | null;
             /** Started At */
             started_at?: string | null;
             /** Completed At */
             completed_at?: string | null;
+        };
+        /** QueuePage */
+        QueuePage: {
+            /** Items */
+            items: components["schemas"]["QueueJob"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            summary: components["schemas"]["QueueSummary"];
         };
         /** QueueRequest */
         QueueRequest: {
@@ -509,6 +637,14 @@ export interface components {
              * Format: uri
              */
             source_url: string;
+            /** Display Name */
+            display_name?: string | null;
+            /**
+             * Origin
+             * @default manual_rip
+             * @enum {string}
+             */
+            origin: "manual_rip" | "digital_crate" | "retry";
             /**
              * Enable Stems
              * @default false
@@ -531,6 +667,31 @@ export interface components {
             hint_discogs_release_id?: number | null;
             /** Source Platform Override */
             source_platform_override?: string | null;
+        };
+        /** QueueSummary */
+        QueueSummary: {
+            /**
+             * Running
+             * @default 0
+             */
+            running: number;
+            /**
+             * Waiting
+             * @default 0
+             */
+            waiting: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Attention
+             * @default 0
+             */
+            attention: number;
+            /** Current Job Id */
+            current_job_id?: number | null;
         };
         /** SecretPatch */
         SecretPatch: {
@@ -1061,7 +1222,11 @@ export interface operations {
     list_jobs_api_jobs_get: {
         parameters: {
             query?: {
+                view?: string;
+                status?: string | null;
+                query?: string;
                 limit?: number;
+                offset?: number;
                 token?: string | null;
             };
             header?: {
@@ -1079,7 +1244,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["QueueJob"][];
+                    "application/json": components["schemas"]["QueuePage"];
                 };
             };
             /** @description Validation Error */
@@ -1119,6 +1284,178 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["QueueJob"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_all_jobs_api_jobs_cancel_all_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_completed_jobs_api_jobs_archive_completed_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_job_history_api_jobs_history_delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_job_api_jobs__job_id__retry_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_job_api_jobs__job_id__archive_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

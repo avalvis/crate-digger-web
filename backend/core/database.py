@@ -48,7 +48,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 # ─── Schema ──────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -129,16 +129,26 @@ CREATE TABLE IF NOT EXISTS queue_jobs (
     display_name        TEXT,
     status              TEXT    NOT NULL CHECK (status IN
                             ('pending','downloading','analyzing',
-                             'tagging','separating_stems','complete','failed','cancelled')),
+                             'tagging','separating_stems','complete',
+                             'complete_with_warnings','failed','cancelled')),
+    operation           TEXT    NOT NULL DEFAULT 'ingest' CHECK (operation IN ('ingest','stems')),
+    origin              TEXT    NOT NULL DEFAULT 'manual_rip',
+    request_payload     TEXT,
     progress_pct        REAL    NOT NULL DEFAULT 0,
+    stage_percent       REAL    NOT NULL DEFAULT 0,
     current_stage       TEXT,
+    status_message      TEXT,
     error_message       TEXT,
+    failure_stage       TEXT,
     track_id            INTEGER,
     enable_stems        INTEGER NOT NULL DEFAULT 0 CHECK (enable_stems IN (0,1)),
+    retry_of_job_id     INTEGER,
+    archived_at         TEXT,
     created_at          TEXT    NOT NULL,
     started_at          TEXT,
     completed_at        TEXT,
-    FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE SET NULL
+    FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE SET NULL,
+    FOREIGN KEY (retry_of_job_id) REFERENCES queue_jobs(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_queue_status   ON queue_jobs(status);
@@ -247,11 +257,19 @@ class QueueJobRecord:
     source_url: str = ""
     display_name: Optional[str] = None
     status: str = "pending"
+    operation: str = "ingest"
+    origin: str = "manual_rip"
+    request_payload: Optional[str] = None
     progress_pct: float = 0.0
+    stage_percent: float = 0.0
     current_stage: Optional[str] = None
+    status_message: Optional[str] = None
     error_message: Optional[str] = None
+    failure_stage: Optional[str] = None
     track_id: Optional[int] = None
     enable_stems: bool = False
+    retry_of_job_id: Optional[int] = None
+    archived_at: Optional[str] = None
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -416,6 +434,9 @@ class VaultDatabase:
                         f"v{SCHEMA_VERSION}. Upgrade the app or restore an "
                         f"older backup."
                     )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_queue_archived ON queue_jobs(archived_at)"
+                )
         except sqlite3.Error as e:
             raise DatabaseSchemaError(f"Schema bootstrap failed: {e}") from e
 
@@ -427,8 +448,48 @@ class VaultDatabase:
     ) -> None:
         """Run sequential migrations. Extended in future schema versions."""
         self._log.info("Migrating vault.db from v%d to v%d", from_v, to_v)
-        # Placeholder for future migrations — e.g.:
-        # if from_v < 2: conn.executescript("ALTER TABLE tracks ADD COLUMN ...")
+        if from_v < 2:
+            conn.executescript("""
+                DROP INDEX IF EXISTS idx_queue_status;
+                DROP INDEX IF EXISTS idx_queue_created;
+                ALTER TABLE queue_jobs RENAME TO queue_jobs_v1;
+                CREATE TABLE queue_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_url TEXT NOT NULL,
+                    display_name TEXT,
+                    status TEXT NOT NULL CHECK (status IN
+                        ('pending','downloading','analyzing','tagging','separating_stems',
+                         'complete','complete_with_warnings','failed','cancelled')),
+                    operation TEXT NOT NULL DEFAULT 'ingest' CHECK (operation IN ('ingest','stems')),
+                    origin TEXT NOT NULL DEFAULT 'manual_rip',
+                    request_payload TEXT,
+                    progress_pct REAL NOT NULL DEFAULT 0,
+                    stage_percent REAL NOT NULL DEFAULT 0,
+                    current_stage TEXT,
+                    status_message TEXT,
+                    error_message TEXT,
+                    failure_stage TEXT,
+                    track_id INTEGER,
+                    enable_stems INTEGER NOT NULL DEFAULT 0 CHECK (enable_stems IN (0,1)),
+                    retry_of_job_id INTEGER,
+                    archived_at TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE SET NULL,
+                    FOREIGN KEY (retry_of_job_id) REFERENCES queue_jobs(id) ON DELETE SET NULL
+                );
+                INSERT INTO queue_jobs (
+                    id, source_url, display_name, status, progress_pct, current_stage,
+                    error_message, track_id, enable_stems, created_at, started_at, completed_at
+                ) SELECT id, source_url, display_name, status, progress_pct, current_stage,
+                         error_message, track_id, enable_stems, created_at, started_at, completed_at
+                    FROM queue_jobs_v1;
+                DROP TABLE queue_jobs_v1;
+                CREATE INDEX idx_queue_status ON queue_jobs(status);
+                CREATE INDEX idx_queue_created ON queue_jobs(created_at DESC);
+                CREATE INDEX idx_queue_archived ON queue_jobs(archived_at);
+            """)
         conn.execute(
             "INSERT OR REPLACE INTO app_metadata(key,value) VALUES(?,?)",
             ("schema_version", str(to_v)),
@@ -937,20 +998,29 @@ class VaultDatabase:
             cur = conn.execute(
                 """
                 INSERT INTO queue_jobs (
-                    source_url, display_name, status, progress_pct,
-                    current_stage, error_message, track_id, enable_stems,
-                    created_at, started_at, completed_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    source_url, display_name, status, operation, origin, request_payload,
+                    progress_pct, stage_percent, current_stage, status_message,
+                    error_message, failure_stage, track_id, enable_stems,
+                    retry_of_job_id, archived_at, created_at, started_at, completed_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job.source_url,
                     job.display_name,
                     job.status,
+                    job.operation,
+                    job.origin,
+                    job.request_payload,
                     job.progress_pct,
+                    job.stage_percent,
                     job.current_stage,
+                    job.status_message,
                     job.error_message,
+                    job.failure_stage,
                     job.track_id,
                     int(job.enable_stems),
+                    job.retry_of_job_id,
+                    job.archived_at,
                     job.created_at,
                     job.started_at,
                     job.completed_at,
@@ -964,10 +1034,15 @@ class VaultDatabase:
         job_id: int,
         *,
         status: Optional[str] = None,
+        display_name: Optional[str] = None,
         progress_pct: Optional[float] = None,
+        stage_percent: Optional[float] = None,
         current_stage: Optional[str] = None,
+        status_message: Optional[str] = None,
         error_message: Optional[str] = None,
+        failure_stage: Optional[str] = None,
         track_id: Optional[int] = None,
+        archived_at: Optional[str] = None,
         started_at: Optional[str] = None,
         completed_at: Optional[str] = None,
     ) -> None:
@@ -975,10 +1050,15 @@ class VaultDatabase:
         params: list[Any] = []
         for col, val in (
             ("status", status),
+            ("display_name", display_name),
             ("progress_pct", progress_pct),
+            ("stage_percent", stage_percent),
             ("current_stage", current_stage),
+            ("status_message", status_message),
             ("error_message", error_message),
+            ("failure_stage", failure_stage),
             ("track_id", track_id),
+            ("archived_at", archived_at),
             ("started_at", started_at),
             ("completed_at", completed_at),
         ):
@@ -998,21 +1078,99 @@ class VaultDatabase:
         self,
         statuses: Optional[Iterable[str]] = None,
         limit: int = 100,
+        *,
+        view: str = "all",
+        query: str = "",
+        offset: int = 0,
     ) -> list[QueueJobRecord]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            statuses = tuple(statuses)
+            placeholders = ",".join("?" for _ in statuses)
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if view == "queue":
+            conditions.append("archived_at IS NULL")
+        elif view == "history":
+            conditions.append("status IN ('complete','complete_with_warnings','failed','cancelled')")
+        if query.strip():
+            conditions.append("(display_name LIKE ? OR source_url LIKE ? OR status_message LIKE ?)")
+            needle = f"%{query.strip()}%"
+            params.extend((needle, needle, needle))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.extend((int(limit), int(offset)))
+        order = "created_at DESC"
+        if view == "queue":
+            order = (
+                "CASE WHEN status IN ('pending','downloading','analyzing','tagging','separating_stems') THEN 0 "
+                "WHEN status IN ('failed','complete_with_warnings') THEN 1 ELSE 2 END, "
+                "CASE WHEN status IN ('pending','downloading','analyzing','tagging','separating_stems') "
+                "THEN COALESCE(started_at, created_at) END ASC, created_at DESC"
+            )
         with self._reading() as conn:
-            if statuses:
-                placeholders = ",".join("?" for _ in statuses)
-                rows = conn.execute(
-                    f"SELECT * FROM queue_jobs WHERE status IN ({placeholders}) "
-                    f"ORDER BY created_at DESC LIMIT ?",
-                    (*statuses, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM queue_jobs ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM queue_jobs{where} ORDER BY {order} LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
         return [_row_to_queue_job(r) for r in rows]
+
+    def get_queue_job(self, job_id: int) -> QueueJobRecord:
+        with self._reading() as conn:
+            row = conn.execute("SELECT * FROM queue_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise RecordNotFoundError(f"Queue job {job_id} not found")
+        return _row_to_queue_job(row)
+
+    def count_queue_jobs(
+        self,
+        *,
+        view: str = "all",
+        statuses: Optional[Iterable[str]] = None,
+        query: str = "",
+    ) -> int:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            statuses = tuple(statuses)
+            placeholders = ",".join("?" for _ in statuses)
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if view == "queue":
+            conditions.append("archived_at IS NULL")
+        elif view == "history":
+            conditions.append("status IN ('complete','complete_with_warnings','failed','cancelled')")
+        if query.strip():
+            conditions.append("(display_name LIKE ? OR source_url LIKE ? OR status_message LIKE ?)")
+            needle = f"%{query.strip()}%"
+            params.extend((needle, needle, needle))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._reading() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM queue_jobs{where}", params).fetchone()
+        return int(row[0])
+
+    def archive_queue_job(self, job_id: int) -> bool:
+        with self._writing() as conn:
+            cur = conn.execute(
+                "UPDATE queue_jobs SET archived_at=? WHERE id=? AND status IN "
+                "('complete','complete_with_warnings','failed','cancelled')",
+                (_utc_now_iso(), job_id),
+            )
+        return cur.rowcount > 0
+
+    def archive_completed_jobs(self) -> int:
+        with self._writing() as conn:
+            cur = conn.execute(
+                "UPDATE queue_jobs SET archived_at=? "
+                "WHERE archived_at IS NULL AND status='complete'",
+                (_utc_now_iso(),),
+            )
+        return cur.rowcount
+
+    def delete_archived_job_history(self) -> int:
+        with self._writing() as conn:
+            cur = conn.execute("DELETE FROM queue_jobs WHERE archived_at IS NOT NULL")
+        return cur.rowcount
 
     def reset_stuck_jobs(self) -> int:
         """
@@ -1272,11 +1430,19 @@ def _row_to_queue_job(row: sqlite3.Row) -> QueueJobRecord:
         source_url=row["source_url"],
         display_name=row["display_name"],
         status=row["status"],
+        operation=row["operation"],
+        origin=row["origin"],
+        request_payload=row["request_payload"],
         progress_pct=row["progress_pct"] or 0.0,
+        stage_percent=row["stage_percent"] or 0.0,
         current_stage=row["current_stage"],
+        status_message=row["status_message"],
         error_message=row["error_message"],
+        failure_stage=row["failure_stage"],
         track_id=row["track_id"],
         enable_stems=bool(row["enable_stems"]),
+        retry_of_job_id=row["retry_of_job_id"],
+        archived_at=row["archived_at"],
         created_at=row["created_at"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],

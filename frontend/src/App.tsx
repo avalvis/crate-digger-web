@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { api, connectEvents } from './lib/api'
+import type { QueuePage } from './lib/types'
 import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { PlayerBar } from './components/PlayerBar'
@@ -17,20 +18,36 @@ export default function App() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [vaultQuery, setVaultQuery] = useState('')
   const queryClient = useQueryClient()
-  const jobs = useQuery({ queryKey: ['jobs'], queryFn: api.jobs, refetchInterval: 15_000 })
+  const jobs = useQuery({ queryKey: ['jobs', 'queue'], queryFn: () => api.jobs({ view: 'queue' }), refetchInterval: 15_000 })
 
   useEffect(() => {
     let disconnect: (() => void) | undefined
+    let disposed = false
     connectEvents((event) => {
+      if (event.job) {
+        queryClient.setQueryData<QueuePage>(['jobs', 'queue'], (page) => {
+          if (!page) return page
+          const items = page.items.some((job) => job.id === event.job!.id)
+            ? page.items.map((job) => job.id === event.job!.id ? event.job! : job)
+            : [event.job!, ...page.items]
+          return { ...page, items: items.filter((job) => !job.archived_at) }
+        })
+      }
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
-      if (event.type === 'job_completed') queryClient.invalidateQueries({ queryKey: ['tracks'] })
-    }).then((value) => { disconnect = value })
-    return () => disconnect?.()
+      if (event.type === 'job_completed' || event.type === 'job_completed_with_warnings') queryClient.invalidateQueries({ queryKey: ['tracks'] })
+    }, () => queryClient.invalidateQueries({ queryKey: ['jobs'] })).then((value) => {
+      if (disposed) value()
+      else disconnect = value
+    })
+    return () => {
+      disposed = true
+      disconnect?.()
+    }
   }, [queryClient])
 
   return (
     <div className="app-shell">
-      <Sidebar jobs={jobs.data || []} onQueue={() => setQueueOpen(true)} />
+      <Sidebar jobs={jobs.data?.items || []} summary={jobs.data?.summary} onQueue={() => setQueueOpen(true)} />
       <div className="app-main">
         <Topbar query={vaultQuery} onQuery={setVaultQuery} />
         <main className="content-scroll">
@@ -45,9 +62,8 @@ export default function App() {
         </main>
       </div>
       <PlayerBar />
-      <QueuePanel open={queueOpen} onOpenChange={setQueueOpen} jobs={jobs.data || []} />
+      <QueuePanel open={queueOpen} onOpenChange={setQueueOpen} queue={jobs.data} />
       <Toast />
     </div>
   )
 }
-

@@ -28,6 +28,9 @@ from .models import (
     HealthResponse,
     PreviewResponse,
     QueueJob,
+    QueuePage,
+    QueueSummary,
+    QueueActionResponse,
     QueueRequest,
     SecretPatch,
     Suggestion,
@@ -67,8 +70,11 @@ def _track(record: Any) -> Track:
     )
 
 
-def _queue_job(record: Any) -> QueueJob:
-    return QueueJob(**dataclasses.asdict(record))
+def _queue_job(record: Any, queue_position: int | None = None) -> QueueJob:
+    values = dataclasses.asdict(record)
+    values.pop("request_payload", None)
+    values["queue_position"] = queue_position
+    return QueueJob(**values)
 
 
 def _crate(record: Any) -> Crate:
@@ -251,9 +257,45 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         except RuntimeUnavailable as exc:
             raise _error("engine_unavailable", str(exc), 503) from exc
 
-    @app.get("/api/jobs", response_model=list[QueueJob])
-    def list_jobs(_: Guard, core: Runtime, limit: int = Query(default=100, ge=1, le=500)) -> list[QueueJob]:
-        return [_queue_job(job) for job in core.db.list_queue_jobs(limit=limit)]
+    @app.get("/api/jobs", response_model=QueuePage)
+    def list_jobs(
+        _: Guard,
+        core: Runtime,
+        view: str = Query(default="queue", pattern="^(queue|history|all)$"),
+        status_filter: str | None = Query(default=None, alias="status"),
+        query: str = Query(default="", max_length=300),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> QueuePage:
+        statuses = tuple(value for value in (status_filter or "").split(",") if value) or None
+        records = core.db.list_queue_jobs(
+            statuses=statuses, limit=limit, view=view, query=query, offset=offset,
+        )
+        pending = sorted(
+            (job for job in core.db.list_queue_jobs(statuses=("pending",), limit=500, view="queue")),
+            key=lambda job: job.created_at or "",
+        )
+        positions = {job.id: index + 1 for index, job in enumerate(pending)}
+        live = core.db.list_queue_jobs(limit=500, view="queue")
+        running_statuses = {"downloading", "analyzing", "tagging", "separating_stems"}
+        running = sorted(
+            (job for job in live if job.status in running_statuses),
+            key=lambda job: job.started_at or job.created_at or "",
+        )
+        summary = QueueSummary(
+            running=len(running),
+            waiting=sum(job.status == "pending" for job in live),
+            completed=sum(job.status == "complete" for job in live),
+            attention=sum(job.status in {"failed", "complete_with_warnings"} for job in live),
+            current_job_id=running[0].id if running else None,
+        )
+        return QueuePage(
+            items=[_queue_job(job, positions.get(job.id)) for job in records],
+            total=core.db.count_queue_jobs(view=view, statuses=statuses, query=query),
+            limit=limit,
+            offset=offset,
+            summary=summary,
+        )
 
     @app.post("/api/jobs", response_model=QueueJob, status_code=202)
     async def create_job(payload: QueueRequest, _: Guard, core: Runtime) -> QueueJob:
@@ -263,8 +305,34 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             job_id = await run_in_threadpool(core.enqueue, values)
         except RuntimeUnavailable as exc:
             raise _error("engine_unavailable", str(exc), 503) from exc
-        job = next(job for job in core.db.list_queue_jobs() if job.id == job_id)
-        return _queue_job(job)
+        return _queue_job(core.db.get_queue_job(job_id))
+
+    @app.post("/api/jobs/cancel-all", response_model=QueueActionResponse)
+    def cancel_all_jobs(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=core.cancel_all_jobs())
+
+    @app.post("/api/jobs/archive-completed", response_model=QueueActionResponse)
+    def archive_completed_jobs(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=core.db.archive_completed_jobs())
+
+    @app.delete("/api/jobs/history", response_model=QueueActionResponse)
+    def delete_job_history(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=core.db.delete_archived_job_history())
+
+    @app.post("/api/jobs/{job_id}/retry", response_model=QueueJob, status_code=202)
+    async def retry_job(job_id: int, _: Guard, core: Runtime) -> QueueJob:
+        try:
+            retry_id = await run_in_threadpool(core.retry_job, job_id)
+        except (RecordNotFoundError, RuntimeUnavailable) as exc:
+            raise _error("job_retry_unavailable", str(exc), 409) from exc
+        except Exception as exc:
+            raise _error("job_not_retryable", str(exc), 409) from exc
+        return _queue_job(core.db.get_queue_job(retry_id))
+
+    @app.post("/api/jobs/{job_id}/archive", status_code=204)
+    def archive_job(job_id: int, _: Guard, core: Runtime) -> None:
+        if not core.db.archive_queue_job(job_id):
+            raise _error("job_not_archivable", "Only finished jobs can be dismissed", 409)
 
     @app.delete("/api/jobs/{job_id}", status_code=204)
     def cancel_job(job_id: int, _: Guard, core: Runtime) -> None:

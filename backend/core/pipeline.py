@@ -124,6 +124,8 @@ class PipelineRequest:
     """Everything needed to run the pipeline for one URL."""
 
     source_url: str
+    display_name: Optional[str] = None
+    origin: str = "manual_rip"
     enable_stems: bool = False
     stem_model: StemModel = StemModel.HTDEMUCS
     # Per-download AI metadata flag. When True (and the pipeline was
@@ -150,6 +152,8 @@ class PipelineResult:
     analysis: AnalysisResult
     download: DownloadResult
     total_elapsed_seconds: float
+    warning_message: Optional[str] = None
+    warning_stage: Optional[str] = None
 
 
 # ─── Exceptions ──────────────────────────────────────────────────────
@@ -345,6 +349,7 @@ class IngestionPipeline:
 
             # ── 7. STEMS (optional) ──
             stems_dir: Optional[Path] = None
+            warning_message: Optional[str] = None
             if request.enable_stems:
                 self._check_cancel(cancel_event)
                 progress.enter(
@@ -353,20 +358,31 @@ class IngestionPipeline:
                 )
                 stems_dir = track_dir / "stems"
                 stems_dir.mkdir(parents=True, exist_ok=True)
-                self._run_stems(
-                    final_audio_path,
-                    stems_dir,
-                    request.stem_model,
-                    progress,
-                    cancel_event,
-                )
+                try:
+                    self._run_stems(
+                        final_audio_path,
+                        stems_dir,
+                        request.stem_model,
+                        progress,
+                        cancel_event,
+                    )
 
-                # Update index row with stems path + flag
-                track_rec = self._db.get_track(track_id)
-                track_rec.stems_separated = True
-                track_rec.stems_path = str(stems_dir)
-                self._db.upsert_track(track_rec)
-                progress.emit(100.0, "Stems complete")
+                    # Update index row with stems path + flag
+                    track_rec = self._db.get_track(track_id)
+                    track_rec.stems_separated = True
+                    track_rec.stems_path = str(stems_dir)
+                    self._db.upsert_track(track_rec)
+                    progress.emit(100.0, "Stems complete")
+                except PipelineCancelledError:
+                    raise
+                except PipelineError as exc:
+                    warning_message = str(exc)
+                    self._log.warning(
+                        "Track %d is ready but optional stems failed: %s",
+                        track_id,
+                        exc,
+                    )
+                    progress.emit(100.0, "Track ready — stem separation needs attention")
 
             # ── COMPLETE ──
             progress.complete(
@@ -388,6 +404,8 @@ class IngestionPipeline:
                 analysis=analysis,
                 download=download,
                 total_elapsed_seconds=elapsed,
+                warning_message=warning_message,
+                warning_stage=(PipelineStage.SEPARATING_STEMS.value if warning_message else None),
             )
 
         except PipelineCancelledError:
@@ -403,6 +421,40 @@ class IngestionPipeline:
             raise PipelineError(str(e)) from e
         finally:
             shutil.rmtree(job_staging, ignore_errors=True)
+
+    def separate_existing_track(
+        self,
+        track_id: int,
+        *,
+        model: StemModel = StemModel.HTDEMUCS,
+        progress_callback: Optional[Callable[[PipelineProgress], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> StemsResult:
+        """Retry only stem separation for an audio file already in the Vault."""
+        track = self._db.get_track(track_id)
+        audio_path = Path(track.file_path)
+        if not audio_path.exists():
+            raise PipelineError(f"Vault audio is missing: {audio_path}")
+
+        progress = _ProgressTracker(
+            {PipelineStage.SEPARATING_STEMS: 100},
+            progress_callback,
+        )
+        progress.display_name = f"{track.artist or 'Unknown'} — {track.title or 'Unknown'}"
+        progress.enter(PipelineStage.SEPARATING_STEMS, f"Retrying stems ({model.value})")
+        result = self._run_stems(
+            audio_path,
+            audio_path.parent / "stems",
+            model,
+            progress,
+            cancel_event,
+        )
+        track.stems_separated = True
+        track.stems_path = str(result.output_dir)
+        self._db.upsert_track(track)
+        progress.emit(100.0, "Stems complete")
+        progress.complete("Track and stems ready")
+        return result
 
     # ── Stage implementations ──
 

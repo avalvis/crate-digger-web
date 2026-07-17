@@ -35,6 +35,7 @@ Failure model:
 from __future__ import annotations
 
 import logging
+import json
 import queue
 import threading
 import time
@@ -49,6 +50,7 @@ from core.pipeline import (
     IngestionPipeline, PipelineCancelledError, PipelineError,
     PipelineProgress, PipelineRequest, PipelineResult, PipelineStage,
 )
+from core.stems import StemModel
 
 
 # ─── Event types ─────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ class QueueEventType(str, Enum):
     JOB_STARTED = "job_started"
     JOB_PROGRESS = "job_progress"
     JOB_COMPLETED = "job_completed"
+    JOB_COMPLETED_WITH_WARNINGS = "job_completed_with_warnings"
     JOB_FAILED = "job_failed"
     JOB_CANCELLED = "job_cancelled"
     # Batch-level
@@ -188,10 +191,19 @@ class QueueShutdownError(QueueManagerError):
 class _InFlightJob:
     """Per-job runtime state held in the active-jobs registry."""
     job_id: int
-    request: PipelineRequest
+    request: Any
     cancel_event: threading.Event
     display_name: Optional[str] = None
     started_at: float = 0.0
+    current_stage: Optional[str] = None
+
+
+@dataclass(slots=True, frozen=True)
+class _StemRetryRequest:
+    track_id: int
+    source_url: str
+    display_name: str
+    model: StemModel = StemModel.HTDEMUCS
 
 
 # Sentinel for worker shutdown
@@ -327,8 +339,28 @@ class QueueManager:
         # and so crash-recovery catches jobs queued but never run.
         job_id = self._db.create_queue_job(QueueJobRecord(
             source_url=request.source_url,
+            display_name=request.display_name,
             status="pending",
+            operation="ingest",
+            origin=request.origin,
+            request_payload=json.dumps(
+                {
+                    "source_url": request.source_url,
+                    "display_name": request.display_name,
+                    "origin": request.origin,
+                    "enable_stems": request.enable_stems,
+                    "stem_model": request.stem_model.value,
+                    "use_ai_metadata": request.use_ai_metadata,
+                    "hint_genre": request.hint_genre,
+                    "hint_country": request.hint_country,
+                    "hint_year": request.hint_year,
+                    "hint_discogs_master_id": request.hint_discogs_master_id,
+                    "hint_discogs_release_id": request.hint_discogs_release_id,
+                    "source_platform_override": request.source_platform_override,
+                }
+            ),
             enable_stems=request.enable_stems,
+            status_message="Waiting for a worker",
         ))
 
         self._work_q.put((job_id, request))
@@ -337,10 +369,70 @@ class QueueManager:
             type=QueueEventType.JOB_ENQUEUED,
             job_id=job_id,
             source_url=request.source_url,
+            display_name=request.display_name,
             message="Enqueued",
         ))
         self._log.info("Enqueued job %d: %s", job_id, request.source_url)
         return job_id
+
+    def retry(self, job_id: int) -> int:
+        """Queue a new attempt while preserving the original history row."""
+        original = self._db.get_queue_job(job_id)
+        terminal = {"complete_with_warnings", "failed", "cancelled"}
+        if original.status not in terminal:
+            raise QueueManagerError("Only warning, failed, or cancelled jobs can be retried")
+
+        if (
+            original.status == "complete_with_warnings"
+            and original.failure_stage == PipelineStage.SEPARATING_STEMS.value
+            and original.track_id is not None
+        ):
+            retry_id = self._db.create_queue_job(QueueJobRecord(
+                source_url=original.source_url,
+                display_name=original.display_name,
+                status="pending",
+                operation="stems",
+                origin="retry",
+                request_payload=json.dumps({"track_id": original.track_id}),
+                track_id=original.track_id,
+                enable_stems=True,
+                retry_of_job_id=job_id,
+                status_message="Waiting to retry stems",
+            ))
+            self._work_q.put((retry_id, _StemRetryRequest(
+                track_id=original.track_id,
+                source_url=original.source_url,
+                display_name=original.display_name or "Vault track",
+            )))
+        else:
+            values = json.loads(original.request_payload or "{}")
+            values.setdefault("source_url", original.source_url)
+            values.setdefault("display_name", original.display_name)
+            values["origin"] = "retry"
+            if isinstance(values.get("stem_model"), str):
+                values["stem_model"] = StemModel(values["stem_model"])
+            request = PipelineRequest(**values)
+            retry_id = self._db.create_queue_job(QueueJobRecord(
+                source_url=request.source_url,
+                display_name=request.display_name,
+                status="pending",
+                operation="ingest",
+                origin="retry",
+                request_payload=json.dumps(values, default=lambda value: value.value),
+                enable_stems=request.enable_stems,
+                retry_of_job_id=job_id,
+                status_message="Waiting to retry ingestion",
+            ))
+            self._work_q.put((retry_id, request))
+
+        self._bus.publish(QueueEvent(
+            type=QueueEventType.JOB_ENQUEUED,
+            job_id=retry_id,
+            source_url=original.source_url,
+            display_name=original.display_name,
+            message="Retry enqueued",
+        ))
+        return retry_id
 
     def cancel(self, job_id: int) -> bool:
         """
@@ -434,7 +526,10 @@ class QueueManager:
 
             try:
                 job_id, request = item
-                self._run_job(job_id, request)
+                if isinstance(request, _StemRetryRequest):
+                    self._run_stem_job(job_id, request)
+                else:
+                    self._run_job(job_id, request)
             except Exception as e:
                 # Absolute safety net — worker must never die.
                 self._log.exception("%s: unhandled worker error", thread_name)
@@ -467,7 +562,9 @@ class QueueManager:
             job_id=job_id,
             request=request,
             cancel_event=cancel_event,
+            display_name=request.display_name,
             started_at=time.monotonic(),
+            current_stage=PipelineStage.DOWNLOADING.value,
         )
         with self._active_lock:
             self._active[job_id] = in_flight
@@ -475,7 +572,8 @@ class QueueManager:
         now = _utc_now_iso()
         self._db.update_queue_job(
             job_id, status="downloading", started_at=now,
-            progress_pct=0.0, current_stage="downloading",
+            progress_pct=0.0, stage_percent=0.0, current_stage="downloading",
+            status_message="Downloading audio",
         )
         self._bus.publish(QueueEvent(
             type=QueueEventType.JOB_STARTED,
@@ -492,13 +590,19 @@ class QueueManager:
                 # so subsequent events carry it without a DB round-trip.
                 if p.display_name and not in_flight.display_name:
                     in_flight.display_name = p.display_name
+                elif p.display_name:
+                    in_flight.display_name = p.display_name
+                in_flight.current_stage = p.stage.value
 
                 # Persist progress for crash-recovery / UI state on boot.
                 self._db.update_queue_job(
                     job_id,
                     status=_stage_to_db_status(p.stage),
+                    display_name=in_flight.display_name,
                     progress_pct=p.overall_percent,
+                    stage_percent=p.stage_percent,
                     current_stage=p.stage.value,
+                    status_message=p.message,
                 )
 
                 self._bus.publish(QueueEvent(
@@ -522,16 +626,28 @@ class QueueManager:
             )
 
             completed_at = _utc_now_iso()
+            final_status = "complete_with_warnings" if result.warning_message else "complete"
             self._db.update_queue_job(
                 job_id,
-                status="complete",
+                status=final_status,
+                display_name=in_flight.display_name,
                 progress_pct=100.0,
+                stage_percent=100.0,
                 current_stage="complete",
+                status_message=(
+                    "Track ready — stem separation needs attention"
+                    if result.warning_message else "Track ready in the Vault"
+                ),
+                error_message=result.warning_message,
+                failure_stage=result.warning_stage,
                 track_id=result.track_id,
                 completed_at=completed_at,
             )
             self._bus.publish(QueueEvent(
-                type=QueueEventType.JOB_COMPLETED,
+                type=(
+                    QueueEventType.JOB_COMPLETED_WITH_WARNINGS
+                    if result.warning_message else QueueEventType.JOB_COMPLETED
+                ),
                 job_id=job_id,
                 source_url=request.source_url,
                 display_name=in_flight.display_name,
@@ -542,6 +658,7 @@ class QueueManager:
                 camelot_key=result.analysis.camelot_key,
                 overall_percent=100.0,
                 message=f"Complete in {result.total_elapsed_seconds:.1f}s",
+                error_message=result.warning_message,
             ))
             self._log.info(
                 "Job %d complete: track_id=%d in %.1fs",
@@ -552,6 +669,8 @@ class QueueManager:
             self._db.update_queue_job(
                 job_id, status="cancelled",
                 error_message=str(e),
+                failure_stage=in_flight.current_stage,
+                status_message="Cancelled by user",
                 completed_at=_utc_now_iso(),
             )
             self._bus.publish(QueueEvent(
@@ -566,6 +685,8 @@ class QueueManager:
             self._db.update_queue_job(
                 job_id, status="failed",
                 error_message=str(e),
+                failure_stage=in_flight.current_stage,
+                status_message="Job failed",
                 completed_at=_utc_now_iso(),
             )
             self._bus.publish(QueueEvent(
@@ -585,6 +706,8 @@ class QueueManager:
             self._db.update_queue_job(
                 job_id, status="failed",
                 error_message=f"Unexpected: {e}",
+                failure_stage=in_flight.current_stage,
+                status_message="Unexpected worker error",
                 completed_at=_utc_now_iso(),
             )
             self._bus.publish(QueueEvent(
@@ -599,11 +722,118 @@ class QueueManager:
             with self._active_lock:
                 self._active.pop(job_id, None)
 
+    def _run_stem_job(self, job_id: int, request: _StemRetryRequest) -> None:
+        if self._db_job_status(job_id) == "cancelled":
+            return
+        cancel_event = threading.Event()
+        active = _InFlightJob(
+            job_id=job_id,
+            request=request,
+            cancel_event=cancel_event,
+            display_name=request.display_name,
+            started_at=time.monotonic(),
+            current_stage=PipelineStage.SEPARATING_STEMS.value,
+        )
+        with self._active_lock:
+            self._active[job_id] = active
+        self._db.update_queue_job(
+            job_id,
+            status="separating_stems",
+            started_at=_utc_now_iso(),
+            current_stage=PipelineStage.SEPARATING_STEMS.value,
+            status_message="Retrying stem separation",
+        )
+        self._bus.publish(QueueEvent(
+            type=QueueEventType.JOB_STARTED,
+            job_id=job_id,
+            source_url=request.source_url,
+            display_name=request.display_name,
+            stage=PipelineStage.SEPARATING_STEMS,
+            message="Stem retry started",
+        ))
+        try:
+            def on_progress(p: PipelineProgress) -> None:
+                active.current_stage = p.stage.value
+                self._db.update_queue_job(
+                    job_id,
+                    status=_stage_to_db_status(p.stage),
+                    progress_pct=p.overall_percent,
+                    stage_percent=p.stage_percent,
+                    current_stage=p.stage.value,
+                    status_message=p.message,
+                )
+                self._bus.publish(QueueEvent(
+                    type=QueueEventType.JOB_PROGRESS,
+                    job_id=job_id,
+                    source_url=request.source_url,
+                    display_name=request.display_name,
+                    stage=p.stage,
+                    overall_percent=p.overall_percent,
+                    stage_percent=p.stage_percent,
+                    message=p.message,
+                ))
+
+            self._pipeline.separate_existing_track(
+                request.track_id,
+                model=request.model,
+                progress_callback=on_progress,
+                cancel_event=cancel_event,
+            )
+            self._db.update_queue_job(
+                job_id,
+                status="complete",
+                progress_pct=100.0,
+                stage_percent=100.0,
+                current_stage="complete",
+                status_message="Stems ready",
+                track_id=request.track_id,
+                completed_at=_utc_now_iso(),
+            )
+            self._bus.publish(QueueEvent(
+                type=QueueEventType.JOB_COMPLETED,
+                job_id=job_id,
+                source_url=request.source_url,
+                display_name=request.display_name,
+                track_id=request.track_id,
+                overall_percent=100.0,
+                message="Stem retry complete",
+            ))
+        except PipelineCancelledError as exc:
+            self._db.update_queue_job(
+                job_id, status="cancelled", error_message=str(exc),
+                failure_stage=PipelineStage.SEPARATING_STEMS.value,
+                status_message="Stem retry cancelled", completed_at=_utc_now_iso(),
+            )
+            self._bus.publish(QueueEvent(
+                type=QueueEventType.JOB_CANCELLED,
+                job_id=job_id,
+                source_url=request.source_url,
+                display_name=request.display_name,
+                message="Stem retry cancelled",
+            ))
+        except Exception as exc:
+            self._db.update_queue_job(
+                job_id, status="failed", error_message=str(exc),
+                failure_stage=PipelineStage.SEPARATING_STEMS.value,
+                status_message="Stem retry failed", completed_at=_utc_now_iso(),
+            )
+            self._bus.publish(QueueEvent(
+                type=QueueEventType.JOB_FAILED,
+                job_id=job_id,
+                source_url=request.source_url,
+                display_name=request.display_name,
+                error_message=str(exc),
+                message="Stem retry failed",
+            ))
+        finally:
+            with self._active_lock:
+                self._active.pop(job_id, None)
+
     def _db_job_status(self, job_id: int) -> Optional[str]:
-        for r in self._db.list_queue_jobs():
-            if r.id == job_id:
-                return r.status
-        return None
+        try:
+            return self._db.get_queue_job(job_id).status
+        except Exception:
+            return None
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────

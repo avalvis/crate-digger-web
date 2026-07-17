@@ -5,6 +5,7 @@ import type {
   PreviewResponse,
   QueueEvent,
   QueueJob,
+  QueuePage,
   Track,
   TrackPage,
 } from './types'
@@ -31,38 +32,51 @@ export function runtimeConfig() {
   return runtimePromise
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
   const runtime = await runtimeConfig()
   const requestUrl = `${runtime.baseUrl}${path}`
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   const requestInit: RequestInit = {
       ...init,
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         'X-Crate-Token': runtime.token,
         ...init.headers,
       },
   }
-  const startupDeadline = Date.now() + 30_000
-  let response: Response
-  while (true) {
-    try {
-      response = await fetch(requestUrl, requestInit)
-      break
-    } catch (error) {
-      // The packaged one-file Python engine needs a few seconds to extract on
-      // first launch. Retry connection failures only; HTTP failures still
-      // surface immediately and commands are never replayed after a response.
-      if (!window.__TAURI_INTERNALS__ || Date.now() >= startupDeadline) throw error
-      await delay(350)
+  try {
+    const startupDeadline = Date.now() + 30_000
+    let response: Response
+    while (true) {
+      try {
+        response = await fetch(requestUrl, requestInit)
+        break
+      } catch (error) {
+        if (controller.signal.aborted) throw error
+        // The packaged one-file Python engine needs a few seconds to extract on
+        // first launch. Retry connection failures only; HTTP failures still
+        // surface immediately and commands are never replayed after a response.
+        if (!window.__TAURI_INTERNALS__ || Date.now() >= startupDeadline) throw error
+        await delay(350)
+      }
     }
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      const detail = body?.detail
+      throw new Error(detail?.message || detail || `Request failed (${response.status})`)
+    }
+    if (response.status === 204) return undefined as T
+    return await response.json() as T
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('The local engine stopped responding. Nothing was changed; try the request again.')
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
   }
-  if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    const detail = body?.detail
-    throw new Error(detail?.message || detail || `Request failed (${response.status})`)
-  }
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
 }
 
 export async function mediaUrl(path: string): Promise<string> {
@@ -80,12 +94,25 @@ export const api = {
   tracks: (query = '') => request<TrackPage>(`/api/tracks?limit=250&query=${encodeURIComponent(query)}`),
   patchTrack: (id: number, values: Partial<Pick<Track, 'rating' | 'notes' | 'tags'>>) =>
     request<Track>(`/api/tracks/${id}`, { method: 'PATCH', body: JSON.stringify(values) }),
-  jobs: () => request<QueueJob[]>('/api/jobs'),
+  jobs: (values: { view?: 'queue' | 'history' | 'all'; query?: string; status?: string; limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams()
+    if (values.view) params.set('view', values.view)
+    if (values.query) params.set('query', values.query)
+    if (values.status) params.set('status', values.status)
+    if (values.limit) params.set('limit', String(values.limit))
+    if (values.offset) params.set('offset', String(values.offset))
+    return request<QueuePage>(`/api/jobs${params.size ? `?${params}` : ''}`)
+  },
   enqueue: (values: Record<string, unknown>) =>
     request<QueueJob>('/api/jobs', { method: 'POST', body: JSON.stringify(values) }),
   cancelJob: (id: number) => request<void>(`/api/jobs/${id}`, { method: 'DELETE' }),
+  cancelAllJobs: () => request<{ affected: number }>('/api/jobs/cancel-all', { method: 'POST' }),
+  retryJob: (id: number) => request<QueueJob>(`/api/jobs/${id}/retry`, { method: 'POST' }),
+  archiveJob: (id: number) => request<void>(`/api/jobs/${id}/archive`, { method: 'POST' }),
+  archiveCompletedJobs: () => request<{ affected: number }>('/api/jobs/archive-completed', { method: 'POST' }),
+  deleteJobHistory: () => request<{ affected: number }>('/api/jobs/history', { method: 'DELETE' }),
   dig: (values: Record<string, unknown>) =>
-    request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }),
+    request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }, 180_000),
   preview: (videoId: string) => request<PreviewResponse>(`/api/previews/${videoId}`, { method: 'POST' }),
   crates: () => request<Crate[]>('/api/crates'),
   createCrate: (name: string, description?: string) =>
@@ -99,7 +126,7 @@ export const api = {
     }),
 }
 
-export async function connectEvents(onEvent: (event: QueueEvent) => void): Promise<() => void> {
+export async function connectEvents(onEvent: (event: QueueEvent) => void, onConnected?: () => void): Promise<() => void> {
   const runtime = await runtimeConfig()
   const base = runtime.baseUrl || window.location.origin
   const url = new URL('/api/events', base)
@@ -112,6 +139,7 @@ export async function connectEvents(onEvent: (event: QueueEvent) => void): Promi
   const connect = () => {
     if (closed) return
     socket = new WebSocket(url)
+    socket.onopen = () => onConnected?.()
     socket.onmessage = (message) => onEvent(JSON.parse(message.data) as QueueEvent)
     socket.onclose = () => {
       if (!closed) retry = window.setTimeout(connect, 1500)

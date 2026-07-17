@@ -57,11 +57,19 @@ class QueueJob(ApiModel):
     source_url: str
     display_name: str | None = None
     status: str
+    operation: Literal["ingest", "stems"] = "ingest"
+    origin: str = "manual_rip"
     progress_pct: float
+    stage_percent: float = 0
     current_stage: str | None = None
+    status_message: str | None = None
     error_message: str | None = None
+    failure_stage: str | None = None
     track_id: int | None = None
     enable_stems: bool
+    retry_of_job_id: int | None = None
+    archived_at: str | None = None
+    queue_position: int | None = None
     created_at: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
@@ -69,6 +77,8 @@ class QueueJob(ApiModel):
 
 class QueueRequest(ApiModel):
     source_url: HttpUrl
+    display_name: str | None = Field(default=None, max_length=500)
+    origin: Literal["manual_rip", "digital_crate", "retry"] = "manual_rip"
     enable_stems: bool = False
     use_ai_metadata: bool = True
     hint_genre: str | None = None
@@ -94,7 +104,28 @@ class QueueEvent(ApiModel):
     track_id: int | None = None
     final_path: str | None = None
     error_message: str | None = None
+    job: QueueJob | None = None
     timestamp: str
+
+
+class QueueSummary(ApiModel):
+    running: int = 0
+    waiting: int = 0
+    completed: int = 0
+    attention: int = 0
+    current_job_id: int | None = None
+
+
+class QueuePage(ApiModel):
+    items: list[QueueJob]
+    total: int
+    limit: int
+    offset: int
+    summary: QueueSummary
+
+
+class QueueActionResponse(ApiModel):
+    affected: int
 
 
 class DiscoveryFilters(ApiModel):

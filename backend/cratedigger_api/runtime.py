@@ -24,7 +24,7 @@ class RuntimeUnavailable(RuntimeError):
 
 def configure_file_logging(data_dir: Path) -> None:
     """Keep web-sidecar diagnostics beside the user's database and config."""
-    path = Path(data_dir) / "cratedigger-web.log"
+    path = Path(data_dir) / "crate-digger-desktop.log"
     logger = logging.getLogger("cratedigger")
     logger.setLevel(logging.DEBUG)
     for handler in logger.handlers:
@@ -43,10 +43,10 @@ def default_data_dir() -> Path:
         return Path(override).expanduser().resolve()
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-        return base / "CrateDigger"
+        return base / "com.cratedigger.desktop"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "CrateDigger"
-    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "CrateDigger"
+        return Path.home() / "Library" / "Application Support" / "com.cratedigger.desktop"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "com.cratedigger.desktop"
 
 
 DEMO_SUGGESTIONS: tuple[dict[str, Any], ...] = (
@@ -195,7 +195,7 @@ class EngineRuntime:
                     num_workers=snap.config.general.concurrent_workers,
                     logger=self.log.getChild("queue"),
                 )
-                queue.events.subscribe(self.events.publish, weak=False)
+                queue.events.subscribe(self._publish_queue_event, weak=False)
                 queue.start()
                 self._preview = PreviewService(
                     ffmpeg_path=binaries.ffmpeg_path,
@@ -241,6 +241,28 @@ class EngineRuntime:
         from core.pipeline import PipelineRequest
 
         return int(self._queue.enqueue(PipelineRequest(**request)))
+
+    def retry_job(self, job_id: int) -> int:
+        self.ensure_media_engine()
+        return int(self._queue.retry(job_id))
+
+    def cancel_all_jobs(self) -> int:
+        self.ensure_media_engine()
+        return int(self._queue.cancel_all())
+
+    def _publish_queue_event(self, event: Any) -> None:
+        """Attach the durable DB snapshot used by live frontend updates."""
+        payload = dataclasses.asdict(event)
+        job_id = payload.get("job_id")
+        if job_id is not None:
+            try:
+                job = dataclasses.asdict(self.db.get_queue_job(int(job_id)))
+                job.pop("request_payload", None)
+                job["queue_position"] = None
+                payload["job"] = job
+            except RecordNotFoundError:
+                payload["job"] = None
+        self.events.publish(payload)
 
     def cancel_job(self, job_id: int) -> bool:
         if self._queue is not None:

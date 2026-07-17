@@ -8,11 +8,8 @@ only when a command needs it, which keeps desktop startup quick.
 from __future__ import annotations
 
 import os
+import sys
 import threading
-
-import uvicorn
-
-from cratedigger_api.app import app
 
 
 def _exit_when_desktop_parent_closes() -> None:
@@ -65,8 +62,66 @@ def _bundle_lazy_engine_modules() -> None:
     import utils.ffmpeg_setup  # noqa: F401
 
 
+def _run_internal_worker() -> bool:
+    """Dispatch private subprocess modes used by the frozen media engine."""
+    if len(sys.argv) < 2:
+        return False
+
+    mode = sys.argv[1]
+    if mode == "--internal-runtime-probe":
+        import json
+        import demucs
+        import torch
+        import torchaudio
+
+        print(json.dumps({
+            "torch": torch.__version__,
+            "torchaudio": torchaudio.__version__,
+            "demucs": demucs.__version__,
+            "python": sys.version.split()[0],
+        }))
+        return True
+
+    if mode == "--internal-import-probe":
+        if len(sys.argv) != 3:
+            raise SystemExit("--internal-import-probe requires a module name")
+        import importlib
+
+        importlib.import_module(sys.argv[2])
+        return True
+
+    if mode == "--internal-demucs":
+        import torchaudio
+
+        def _soundfile_save(
+            uri, src, sample_rate, channels_first=True, format=None,
+            encoding=None, bits_per_sample=None, compression=None, backend=None,
+        ):
+            import soundfile as sf
+
+            wav = src.numpy()
+            if channels_first:
+                wav = wav.T
+            sf.write(str(uri), wav, sample_rate, subtype="FLOAT")
+
+        torchaudio.save = _soundfile_save
+        sys.argv = ["demucs", *sys.argv[2:]]
+        from demucs.__main__ import main as demucs_main
+
+        demucs_main()
+        return True
+
+    return False
+
+
 def main() -> None:
     _exit_when_desktop_parent_closes()
+    if _run_internal_worker():
+        return
+
+    import uvicorn
+    from cratedigger_api.app import app
+
     uvicorn.run(
         app,
         host="127.0.0.1",
