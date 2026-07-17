@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+src-tauri/target/
+src-tauri/binaries/*.exe
+backend/.data/
+dist/
+build/
+*.spec
+.env
+
