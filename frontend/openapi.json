@@ -3,7 +3,7 @@
   "info": {
     "title": "Crate Digger API",
     "description": "Loopback API for the Crate Digger desktop web interface.",
-    "version": "0.2.3"
+    "version": "0.2.4"
   },
   "paths": {
     "/api/health": {

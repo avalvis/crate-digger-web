@@ -15,7 +15,7 @@ from utils.config import ConfigManager
 from .events import EventHub
 
 
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 
 
 class RuntimeUnavailable(RuntimeError):
