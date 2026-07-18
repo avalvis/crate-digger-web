@@ -31,8 +31,8 @@ sounddevice>=0.4.6
 # Keep torch / torchaudio / torchcodec aligned.
 torch==2.11.0
 torchaudio==2.11.0
-# torchcodec intentionally excluded — demucs decodes audio via ffmpeg,
-# not torchcodec, so the broken DLL is irrelevant to stem separation.
+# torchcodec intentionally excluded — the Demucs worker patches Torchaudio
+# loading through bundled FFmpeg and saving through SoundFile.
 demucs==4.0.1
 # Optional: needed only for mdx_extra_q model quality preset.
 # If unavailable, the app now falls back to mdx_extra at runtime.

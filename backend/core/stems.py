@@ -116,24 +116,17 @@ class StemSeparationCancelledError(StemSeparationError):
 _PROGRESS_RE = re.compile(r"\b(\d{1,3})%\|")
 _BAG_MODELS_RE = re.compile(r"\bbag of (\d+) models?\b", re.IGNORECASE)
 
-# Injected as `python -c _DEMUCS_RUNNER` so we can patch torchaudio.save
-# before demucs imports it.  torchaudio 2.8+ delegates save() to torchcodec
-# whose native DLL may fail to load on CPU-only or certain Windows builds.
-# soundfile writes 32-bit float WAV with zero native-DLL dependencies.
+# Injected as `python -c _DEMUCS_RUNNER` so we can patch torchaudio.load/save
+# before demucs imports them. Torchaudio 2.11 delegates both to optional
+# TorchCodec, while Demucs's first loader also requires an unbundled ffprobe.
+# Our adapter decodes through bundled FFmpeg and writes through SoundFile.
 # sys.argv layout when called via `python -c CODE arg1 arg2 …`:
 #   sys.argv == ['-c', arg1, arg2, …]
 # demucs.separate.main() reads sys.argv[1:], so the args land correctly.
 _DEMUCS_RUNNER = (
-    "import sys, torchaudio\n"
-    "def _sf_save(uri, src, sample_rate, channels_first=True,\n"
-    "             format=None, encoding=None, bits_per_sample=None,\n"
-    "             compression=None, backend=None):\n"
-    "    import soundfile as sf\n"
-    "    wav = src.numpy()\n"
-    "    if channels_first:\n"
-    "        wav = wav.T\n"
-    "    sf.write(str(uri), wav, sample_rate, subtype='FLOAT')\n"
-    "torchaudio.save = _sf_save\n"
+    "import sys\n"
+    "from utils.demucs_audio import patch_torchaudio_io\n"
+    "patch_torchaudio_io()\n"
     "from demucs.__main__ import main; main()\n"
 )
 
@@ -195,9 +188,8 @@ class StemSeparator:
             ok=True  -> details has version info.
             ok=False -> details has first actionable failure line.
 
-        Intentionally does NOT import torchcodec — its DLL may fail to load
-        on machines without the right CUDA runtime even when demucs works
-        fine (demucs decodes audio via ffmpeg, not torchcodec).
+        Intentionally does NOT import torchcodec. The worker installs Crate
+        Digger's bundled-FFmpeg adapter before Demucs imports Torchaudio.
         """
         script = (
             "import json, sys\n"
@@ -397,8 +389,8 @@ class StemSeparator:
 
         - `mdx_extra_q` requires `diffq`; automatically fall back to
           `mdx_extra` when unavailable.
-        - torchaudio 2.9+ relies on `torchcodec`; fail early with an
-          actionable error when the import/runtime is broken.
+        - TorchCodec is optional because the worker supplies deterministic
+          FFmpeg/SoundFile adapters for Torchaudio load and save.
         """
         active_model = model
 
@@ -420,12 +412,11 @@ class StemSeparator:
                     "Model mdx_extra_q requires diffq; using mdx_extra instead",
                 )
 
-        # torchcodec is an optional torchaudio 2.9+ backend; demucs itself
-        # decodes audio via ffmpeg, so missing torchcodec is non-fatal.
+        # TorchCodec is optional: the Demucs worker patches Torchaudio I/O.
         ok, details = self._python_module_check("torchcodec")
         if not ok:
             self._log.debug(
-                "torchcodec not available (%s); demucs will use ffmpeg backend.",
+                "torchcodec not available (%s); using Crate Digger's FFmpeg adapter.",
                 details,
             )
 

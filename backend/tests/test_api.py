@@ -26,7 +26,7 @@ def test_auth_and_health(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            "version": "0.2.1",
+            "version": "0.2.2",
             "engine_ready": False,
             "engine_error": None,
         }

@@ -9,9 +9,9 @@ Resolves a working ffmpeg binary path at app startup. Strategy:
        and executable, use it.
     2. Check the system PATH. Fast common case on most dev machines.
     3. Fall back to `imageio-ffmpeg`, which bundles a static binary
-       per-platform and exposes it via `get_ffmpeg_exe()`. This is
-       the "plug-and-play" path from the spec — the binary is
-       downloaded and cached on first run, and reused thereafter.
+       per-platform and exposes it via `get_ffmpeg_exe()`. For the
+       desktop app it is copied once to the isolated application-data
+       tools directory under the canonical `ffmpeg(.exe)` name.
 
 Never asks the user for permission. Never requires PATH editing.
 Never blocks the UI — callers invoke `provision_ffmpeg()` from the
@@ -65,6 +65,7 @@ _REQUIRED_ENCODERS = ("pcm_s16le", "aac")
 def provision_ffmpeg(
     *,
     config_hint: Optional[str] = None,
+    tools_dir: Optional[Path] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
     logger: Optional[logging.Logger] = None,
 ) -> FFmpegBinaries:
@@ -75,6 +76,11 @@ def provision_ffmpeg(
 
     Args:
         config_hint: A user-pinned path from config.json, or None.
+        tools_dir: Private application tools directory. When supplied,
+            the bundled imageio binary is atomically materialized here as
+            `ffmpeg.exe` (Windows) or `ffmpeg` (other platforms). The
+            directory is added to this process's PATH because yt-dlp's
+            partial-download availability check ignores `ffmpeg_location`.
         progress_callback: Optional (message) callback for splash UI.
             Called at most a few times; messages are short ("Checking
             ffmpeg", "Downloading ffmpeg (first run)", etc.).
@@ -115,6 +121,10 @@ def provision_ffmpeg(
     _emit(progress_callback, "Preparing bundled ffmpeg (first run)…")
     try:
         bundled_path = _resolve_imageio_ffmpeg(log)
+        if tools_dir is not None:
+            bundled_path = _materialize_named_ffmpeg(
+                bundled_path, Path(tools_dir), log,
+            )
     except FFmpegProvisioningError:
         raise
     except Exception as e:
@@ -124,10 +134,20 @@ def provision_ffmpeg(
 
     result = _try_path(bundled_path, "imageio_bundle", log)
     if result is None:
-        raise FFmpegProvisioningError(
-            f"Bundled ffmpeg at {bundled_path} failed verification. "
-            f"Reinstalling `imageio-ffmpeg` may fix this."
-        )
+        # A prior application run may have been interrupted while antivirus
+        # inspected the executable. Refresh once from the packaged source.
+        if tools_dir is not None:
+            source_path = _resolve_imageio_ffmpeg(log)
+            bundled_path = _materialize_named_ffmpeg(
+                source_path, Path(tools_dir), log, force=True,
+            )
+            result = _try_path(bundled_path, "imageio_bundle", log)
+        if result is None:
+            raise FFmpegProvisioningError(
+                f"Bundled ffmpeg at {bundled_path} failed verification. "
+                f"Reinstalling the application may fix this."
+            )
+    _expose_ffmpeg_to_child_processes(result.ffmpeg_path)
     log.info("Using bundled ffmpeg: %s", result.ffmpeg_path)
     _emit(progress_callback, "ffmpeg ready.")
     return result
@@ -237,10 +257,9 @@ def _resolve_ffprobe_next_to(ffmpeg_path: str) -> Optional[str]:
 def _resolve_imageio_ffmpeg(log: logging.Logger) -> str:
     """
     Call into `imageio_ffmpeg.get_ffmpeg_exe()`, which returns a path
-    to a bundled static binary. On first call, the library downloads
-    the binary (~30MB) and caches it under the user's data directory
-    (~/.cache on Linux, ~/Library/Application Support on macOS,
-    %LOCALAPPDATA% on Windows). Subsequent calls are instant.
+    to the static binary included in the platform wheel. PyInstaller also
+    collects this binary into the desktop sidecar, so no runtime download
+    or system FFmpeg installation is required.
     """
     try:
         import imageio_ffmpeg
@@ -274,6 +293,72 @@ def _resolve_imageio_ffmpeg(log: logging.Logger) -> str:
             pass
 
     return path
+
+
+def _materialize_named_ffmpeg(
+    source: str,
+    tools_dir: Path,
+    log: logging.Logger,
+    *,
+    force: bool = False,
+) -> str:
+    """Copy imageio's versioned executable to an app-private canonical name."""
+    source_path = Path(source).resolve()
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    target = tools_dir / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+
+    try:
+        if source_path == target.resolve():
+            return str(target)
+    except OSError:
+        pass
+
+    try:
+        current = target.stat() if target.exists() else None
+        packaged = source_path.stat()
+        if not force and current is not None and current.st_size == packaged.st_size:
+            _ensure_executable(target)
+            return str(target)
+
+        temporary = tools_dir / f".{target.name}.{os.getpid()}.tmp"
+        try:
+            shutil.copy2(source_path, temporary)
+            _ensure_executable(temporary)
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError as exc:
+        raise FFmpegProvisioningError(
+            f"Could not prepare private ffmpeg executable in {tools_dir}: {exc}"
+        ) from exc
+
+    log.info("Prepared private ffmpeg executable: %s", target)
+    return str(target)
+
+
+def _ensure_executable(path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    try:
+        os.chmod(path, path.stat().st_mode | 0o111)
+    except OSError:
+        pass
+
+
+def _expose_ffmpeg_to_child_processes(ffmpeg_path: str) -> None:
+    """Make bundled FFmpeg discoverable to yt-dlp and spawned media workers."""
+    resolved = Path(ffmpeg_path).resolve()
+    directory = str(resolved.parent)
+    existing = os.environ.get("PATH", "")
+    entries = [part for part in existing.split(os.pathsep) if part]
+    normalized = os.path.normcase(os.path.normpath(directory))
+    if all(os.path.normcase(os.path.normpath(part)) != normalized for part in entries):
+        os.environ["PATH"] = directory + (os.pathsep + existing if existing else "")
+    os.environ["FFMPEG_BINARY"] = str(resolved)
+    os.environ["IMAGEIO_FFMPEG_EXE"] = str(resolved)
 
 
 def _emit(cb: Optional[Callable[[str], None]], message: str) -> None:

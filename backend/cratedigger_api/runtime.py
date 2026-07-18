@@ -15,7 +15,7 @@ from utils.config import ConfigManager
 from .events import EventHub
 
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 
 class RuntimeUnavailable(RuntimeError):
@@ -158,7 +158,10 @@ class EngineRuntime:
                 from utils.ffmpeg_setup import provision_ffmpeg
 
                 snap = self.config.snapshot()
-                binaries = provision_ffmpeg(logger=self.log.getChild("ffmpeg"))
+                binaries = provision_ffmpeg(
+                    tools_dir=self.data_dir / "tools",
+                    logger=self.log.getChild("ffmpeg"),
+                )
                 downloader = Downloader(
                     ffmpeg_path=binaries.ffmpeg_path,
                     retries=snap.config.downloader.retries,

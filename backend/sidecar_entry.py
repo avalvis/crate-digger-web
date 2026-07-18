@@ -91,20 +91,9 @@ def _run_internal_worker() -> bool:
         return True
 
     if mode == "--internal-demucs":
-        import torchaudio
+        from utils.demucs_audio import patch_torchaudio_io
 
-        def _soundfile_save(
-            uri, src, sample_rate, channels_first=True, format=None,
-            encoding=None, bits_per_sample=None, compression=None, backend=None,
-        ):
-            import soundfile as sf
-
-            wav = src.numpy()
-            if channels_first:
-                wav = wav.T
-            sf.write(str(uri), wav, sample_rate, subtype="FLOAT")
-
-        torchaudio.save = _soundfile_save
+        patch_torchaudio_io()
         sys.argv = ["demucs", *sys.argv[2:]]
         from demucs.__main__ import main as demucs_main
 
