@@ -135,7 +135,7 @@ def test_v1_queue_schema_migrates_before_archived_index_is_created(tmp_path: Pat
         failure_stage="separating_stems",
     ))
     assert migrated.get_queue_job(job_id).status == "complete_with_warnings"
-    assert migrated.get_meta("schema_version") == "2"
+    assert migrated.get_meta("schema_version") == "3"
     migrated.close()
 
 

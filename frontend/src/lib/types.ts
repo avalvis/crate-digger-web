@@ -21,6 +21,7 @@ export interface Track {
   file_available: boolean
   artwork_url: string | null
   output_format: 'm4a' | 'mp3' | 'wav'
+  crate?: CrateRef | null
 }
 
 export interface TrackPage { items: Track[]; total: number; limit: number; offset: number }
@@ -101,7 +102,26 @@ export interface MpcJob {
   error_message: string | null
   track_dir: string | null
 }
-export interface Crate { id: number; name: string; description: string | null; created_at: string | null; track_count: number }
+export interface CrateRef { id: number; name: string; color: string }
+export interface Crate extends CrateRef {
+  description: string | null
+  created_at: string | null
+  updated_at: string | null
+  track_count: number
+}
+export interface CrateOverview { items: Crate[]; unassigned_count: number }
+export interface CrateDetail extends Crate { tracks: TrackPage }
+export interface CrateAssignmentResult { assigned: number; moved: number; unchanged: number }
+export interface CrateAssignmentConflict { track_id: number; crate_id: number; crate_name: string }
+export interface CrateSuggestion {
+  key: string
+  kind: 'month' | 'genre' | 'mood'
+  label: string
+  proposed_name: string
+  track_ids: number[]
+  count: number
+}
+export interface TrackLocation { file_path: string; available: boolean }
 
 export interface ConfigResponse {
   config: {

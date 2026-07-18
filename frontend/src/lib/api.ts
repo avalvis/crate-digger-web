@@ -1,6 +1,10 @@
 import type {
   ConfigResponse,
   Crate,
+  CrateAssignmentResult,
+  CrateDetail,
+  CrateOverview,
+  CrateSuggestion,
   DiscoveryResponse,
   DiscoveryInteraction,
   MpcExportMode,
@@ -12,6 +16,7 @@ import type {
   QueuePage,
   Track,
   TrackPage,
+  TrackLocation,
 } from './types'
 
 interface RuntimeConfig { baseUrl: string; token: string }
@@ -69,7 +74,10 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 90_0
     if (!response.ok) {
       const body = await response.json().catch(() => null)
       const detail = body?.detail
-      throw new Error(detail?.message || detail || `Request failed (${response.status})`)
+      throw Object.assign(
+        new Error(detail?.message || detail || `Request failed (${response.status})`),
+        { status: response.status, code: detail?.code, detail },
+      )
     }
     if (response.status === 204) return undefined as T
     return await response.json() as T
@@ -95,7 +103,14 @@ export const api = {
     request<ConfigResponse>('/api/config', { method: 'PATCH', body: JSON.stringify({ section, values }) }),
   setSecret: (name: 'discogs' | 'deepseek', value: string) =>
     request<ConfigResponse>(`/api/config/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
-  tracks: (query = '') => request<TrackPage>(`/api/tracks?limit=250&query=${encodeURIComponent(query)}`),
+  tracks: (query = '', values: { crateId?: number; unassigned?: boolean; limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams({ limit: String(values.limit || 250) })
+    if (query) params.set('query', query)
+    if (values.crateId !== undefined) params.set('crate_id', String(values.crateId))
+    if (values.unassigned !== undefined) params.set('unassigned', String(values.unassigned))
+    if (values.offset) params.set('offset', String(values.offset))
+    return request<TrackPage>(`/api/tracks?${params}`)
+  },
   track: (id: number) => request<Track>(`/api/tracks/${id}`),
   patchTrack: (id: number, values: Partial<Pick<Track, 'rating' | 'notes' | 'tags'>>) =>
     request<Track>(`/api/tracks/${id}`, { method: 'PATCH', body: JSON.stringify(values) }),
@@ -142,11 +157,21 @@ export const api = {
     `/api/previews/prefetch?video_ids=${encodeURIComponent(videoIds.join(','))}`,
   ),
   trackWaveform: (id: number) => request<{ peaks: number[]; duration_seconds: number }>(`/api/tracks/${id}/waveform`),
+  trackLocation: (id: number) => request<TrackLocation>(`/api/tracks/${id}/location`),
   crates: () => request<Crate[]>('/api/crates'),
-  createCrate: (name: string, description?: string) =>
-    request<Crate>('/api/crates', { method: 'POST', body: JSON.stringify({ name, description }) }),
+  crateOverview: () => request<CrateOverview>('/api/crates/overview'),
+  crate: (id: number, query = '') => request<CrateDetail>(`/api/crates/${id}?query=${encodeURIComponent(query)}`),
+  crateSuggestions: (includeAssigned = false) => request<CrateSuggestion[]>(`/api/crates/suggestions?include_assigned=${includeAssigned}`),
+  createCrate: (name: string, description?: string, color = '#F4DF00') =>
+    request<Crate>('/api/crates', { method: 'POST', body: JSON.stringify({ name, description, color }) }),
+  updateCrate: (id: number, values: { name: string; description: string | null; color: string }) =>
+    request<Crate>(`/api/crates/${id}`, { method: 'PATCH', body: JSON.stringify(values) }),
+  assignToCrate: (crateId: number, trackIds: number[], allowMoves = false) =>
+    request<CrateAssignmentResult>(`/api/crates/${crateId}/tracks`, { method: 'PUT', body: JSON.stringify({ track_ids: trackIds, allow_moves: allowMoves }) }),
   addToCrate: (crateId: number, trackIds: number[]) =>
-    request<{ added: number }>(`/api/crates/${crateId}/tracks`, { method: 'POST', body: JSON.stringify({ track_ids: trackIds }) }),
+    request<CrateAssignmentResult>(`/api/crates/${crateId}/tracks`, { method: 'PUT', body: JSON.stringify({ track_ids: trackIds, allow_moves: false }) }),
+  removeFromCrate: (crateId: number, trackIds: number[]) =>
+    request<{ removed: number }>(`/api/crates/${crateId}/tracks`, { method: 'DELETE', body: JSON.stringify({ track_ids: trackIds }) }),
   deleteCrate: (crateId: number) => request<void>(`/api/crates/${crateId}`, { method: 'DELETE' }),
   exportTracks: (trackIds: number[], destination: string) =>
     request<{ accepted: number; message: string }>('/api/exports', {

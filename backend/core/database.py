@@ -48,7 +48,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 # ─── Schema ──────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -193,7 +193,9 @@ CREATE TABLE IF NOT EXISTS crates (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     name                TEXT    NOT NULL UNIQUE,
     description         TEXT,
-    created_at          TEXT    NOT NULL
+    color               TEXT    NOT NULL DEFAULT '#F4DF00',
+    created_at          TEXT    NOT NULL,
+    updated_at          TEXT    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS crate_tracks (
@@ -201,6 +203,7 @@ CREATE TABLE IF NOT EXISTS crate_tracks (
     track_id            INTEGER NOT NULL,
     added_at            TEXT    NOT NULL,
     PRIMARY KEY (crate_id, track_id),
+    UNIQUE (track_id),
     FOREIGN KEY (crate_id) REFERENCES crates(id) ON DELETE CASCADE,
     FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
 );
@@ -249,6 +252,9 @@ class TrackRecord:
     rating: Optional[int] = None
     notes: Optional[str] = None
     tags: list[str] = field(default_factory=list)
+    crate_id: Optional[int] = None
+    crate_name: Optional[str] = None
+    crate_color: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -308,8 +314,17 @@ class CrateRecord:
     id: Optional[int] = None
     name: str = ""
     description: Optional[str] = None
+    color: str = "#F4DF00"
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
     track_count: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class CrateAssignmentResult:
+    assigned: int = 0
+    moved: int = 0
+    unchanged: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -334,6 +349,7 @@ class TrackFilter:
     min_rating: Optional[int] = None
     tag: Optional[str] = None
     crate_id: Optional[int] = None
+    unassigned: Optional[bool] = None
     limit: int = 500
     offset: int = 0
     order_by: str = "date_added"  # whitelist-checked in build_query
@@ -353,6 +369,14 @@ class DatabaseSchemaError(DatabaseError):
 
 class RecordNotFoundError(DatabaseError):
     """No row matched the given selector."""
+
+
+class CrateAssignmentConflictError(DatabaseError):
+    """Tracks already belong to another exclusive crate."""
+
+    def __init__(self, conflicts: list[dict[str, Any]]) -> None:
+        super().__init__("Some tracks already belong to another crate.")
+        self.conflicts = conflicts
 
 
 # ─── The DAO ─────────────────────────────────────────────────────────
@@ -489,6 +513,41 @@ class VaultDatabase:
                 CREATE INDEX idx_queue_status ON queue_jobs(status);
                 CREATE INDEX idx_queue_created ON queue_jobs(created_at DESC);
                 CREATE INDEX idx_queue_archived ON queue_jobs(archived_at);
+            """)
+        if from_v < 3:
+            crate_columns = {
+                str(row["name"]) for row in conn.execute("PRAGMA table_info(crates)")
+            }
+            if "color" not in crate_columns:
+                conn.execute(
+                    "ALTER TABLE crates ADD COLUMN color TEXT NOT NULL DEFAULT '#F4DF00'"
+                )
+            if "updated_at" not in crate_columns:
+                conn.execute("ALTER TABLE crates ADD COLUMN updated_at TEXT")
+            conn.execute("UPDATE crates SET updated_at = created_at WHERE updated_at IS NULL")
+            conn.executescript("""
+                ALTER TABLE crate_tracks RENAME TO crate_tracks_v2;
+                CREATE TABLE crate_tracks (
+                    crate_id INTEGER NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    added_at TEXT NOT NULL,
+                    PRIMARY KEY (crate_id, track_id),
+                    UNIQUE (track_id),
+                    FOREIGN KEY (crate_id) REFERENCES crates(id) ON DELETE CASCADE,
+                    FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+                );
+                INSERT INTO crate_tracks(crate_id, track_id, added_at)
+                SELECT crate_id, track_id, added_at FROM (
+                    SELECT crate_id, track_id, added_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY track_id
+                               ORDER BY added_at DESC, crate_id ASC
+                           ) AS membership_rank
+                      FROM crate_tracks_v2
+                ) WHERE membership_rank = 1;
+                DROP TABLE crate_tracks_v2;
+                CREATE INDEX idx_crate_tracks_crate ON crate_tracks(crate_id);
+                CREATE INDEX idx_crate_tracks_track ON crate_tracks(track_id);
             """)
         conn.execute(
             "INSERT OR REPLACE INTO app_metadata(key,value) VALUES(?,?)",
@@ -705,7 +764,12 @@ class VaultDatabase:
     def get_track(self, track_id: int) -> TrackRecord:
         with self._reading() as conn:
             row = conn.execute(
-                "SELECT * FROM tracks WHERE id=?",
+                """SELECT tracks.*, c.id AS assigned_crate_id,
+                          c.name AS assigned_crate_name, c.color AS assigned_crate_color
+                     FROM tracks
+                     LEFT JOIN crate_tracks ct ON ct.track_id = tracks.id
+                     LEFT JOIN crates c ON c.id = ct.crate_id
+                    WHERE tracks.id=?""",
                 (track_id,),
             ).fetchone()
         if not row:
@@ -807,30 +871,29 @@ class VaultDatabase:
 
     # ─── Crates / collections ───────────────────────────────────────
 
-    def create_crate(self, name: str, description: Optional[str] = None) -> int:
-        """Create a crate; returns its id. Returns existing id if name taken."""
+    def create_crate(
+        self, name: str, description: Optional[str] = None, color: str = "#F4DF00"
+    ) -> int:
+        """Create a crate and return its id."""
         name = (name or "").strip()
         if not name:
             raise DatabaseError("Crate name cannot be empty.")
         with self._writing() as conn:
             try:
                 cur = conn.execute(
-                    "INSERT INTO crates(name, description, created_at) "
-                    "VALUES(?,?,?)",
-                    (name, description, _utc_now_iso()),
+                    "INSERT INTO crates(name, description, color, created_at, updated_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (name, description, color, _utc_now_iso(), _utc_now_iso()),
                 )
                 return int(cur.lastrowid)
             except sqlite3.IntegrityError:
-                row = conn.execute(
-                    "SELECT id FROM crates WHERE name=?", (name,)
-                ).fetchone()
-                return int(row["id"])
+                raise DatabaseError("A crate with that name already exists.")
 
     def list_crates(self) -> list[CrateRecord]:
         with self._reading() as conn:
             rows = conn.execute(
                 """
-                SELECT c.id, c.name, c.description, c.created_at,
+                SELECT c.id, c.name, c.description, c.color, c.created_at, c.updated_at,
                        COUNT(ct.track_id) AS track_count
                   FROM crates c
                   LEFT JOIN crate_tracks ct ON ct.crate_id = c.id
@@ -840,25 +903,86 @@ class VaultDatabase:
             ).fetchall()
         return [
             CrateRecord(
-                id=r["id"], name=r["name"], description=r["description"],
-                created_at=r["created_at"], track_count=r["track_count"] or 0,
+                id=r["id"], name=r["name"], description=r["description"], color=r["color"],
+                created_at=r["created_at"], updated_at=r["updated_at"], track_count=r["track_count"] or 0,
             )
             for r in rows
         ]
 
-    def add_tracks_to_crate(self, crate_id: int, track_ids: Iterable[int]) -> int:
-        """Add tracks to a crate (idempotent). Returns count newly added."""
-        now = _utc_now_iso()
-        added = 0
+    def get_crate(self, crate_id: int) -> CrateRecord:
+        for crate in self.list_crates():
+            if crate.id == int(crate_id):
+                return crate
+        raise RecordNotFoundError(f"No crate with id={crate_id}")
+
+    def update_crate(
+        self, crate_id: int, *, name: str, description: Optional[str], color: str
+    ) -> CrateRecord:
+        name = (name or "").strip()
+        if not name:
+            raise DatabaseError("Crate name cannot be empty.")
         with self._writing() as conn:
-            for tid in track_ids:
+            try:
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO crate_tracks(crate_id, track_id, "
-                    "added_at) VALUES(?,?,?)",
-                    (int(crate_id), int(tid), now),
+                    "UPDATE crates SET name=?, description=?, color=?, updated_at=? WHERE id=?",
+                    (name, description, color, _utc_now_iso(), int(crate_id)),
                 )
-                added += cur.rowcount
-        return added
+            except sqlite3.IntegrityError as exc:
+                raise DatabaseError("A crate with that name already exists.") from exc
+            if cur.rowcount == 0:
+                raise RecordNotFoundError(f"No crate with id={crate_id}")
+        return self.get_crate(crate_id)
+
+    def assign_tracks_to_crate(
+        self, crate_id: int, track_ids: Iterable[int], *, allow_moves: bool = False
+    ) -> CrateAssignmentResult:
+        """Assign tracks exclusively, optionally moving existing memberships."""
+        ids = list(dict.fromkeys(int(track_id) for track_id in track_ids))
+        if not ids:
+            return CrateAssignmentResult()
+        now = _utc_now_iso()
+        with self._writing() as conn:
+            if not conn.execute("SELECT 1 FROM crates WHERE id=?", (int(crate_id),)).fetchone():
+                raise RecordNotFoundError(f"No crate with id={crate_id}")
+            placeholders = ",".join("?" for _ in ids)
+            found = {int(row[0]) for row in conn.execute(
+                f"SELECT id FROM tracks WHERE id IN ({placeholders})", ids
+            )}
+            if len(found) != len(ids):
+                missing = sorted(set(ids) - found)
+                raise RecordNotFoundError(f"Tracks not found: {missing}")
+            memberships = conn.execute(
+                f"""SELECT ct.track_id, ct.crate_id, c.name
+                       FROM crate_tracks ct JOIN crates c ON c.id=ct.crate_id
+                      WHERE ct.track_id IN ({placeholders})""", ids,
+            ).fetchall()
+            conflicts = [
+                {"track_id": int(row["track_id"]), "crate_id": int(row["crate_id"]), "crate_name": row["name"]}
+                for row in memberships if int(row["crate_id"]) != int(crate_id)
+            ]
+            if conflicts and not allow_moves:
+                raise CrateAssignmentConflictError(conflicts)
+            current = {int(row["track_id"]) for row in memberships if int(row["crate_id"]) == int(crate_id)}
+            moved_ids = {entry["track_id"] for entry in conflicts}
+            if moved_ids:
+                move_placeholders = ",".join("?" for _ in moved_ids)
+                conn.execute(
+                    f"DELETE FROM crate_tracks WHERE track_id IN ({move_placeholders})",
+                    list(moved_ids),
+                )
+            new_ids = [track_id for track_id in ids if track_id not in current]
+            conn.executemany(
+                "INSERT INTO crate_tracks(crate_id, track_id, added_at) VALUES(?,?,?)",
+                [(int(crate_id), track_id, now) for track_id in new_ids],
+            )
+            conn.execute("UPDATE crates SET updated_at=? WHERE id=?", (now, int(crate_id)))
+        return CrateAssignmentResult(
+            assigned=len(new_ids) - len(moved_ids), moved=len(moved_ids), unchanged=len(current)
+        )
+
+    def add_tracks_to_crate(self, crate_id: int, track_ids: Iterable[int]) -> int:
+        """Compatibility wrapper for exclusive assignment without moves."""
+        return self.assign_tracks_to_crate(crate_id, track_ids).assigned
 
     def remove_tracks_from_crate(
         self, crate_id: int, track_ids: Iterable[int]
@@ -871,7 +995,20 @@ class VaultDatabase:
                     (int(crate_id), int(tid)),
                 )
                 total += cur.rowcount
+            if total:
+                conn.execute("UPDATE crates SET updated_at=? WHERE id=?", (_utc_now_iso(), int(crate_id)))
         return total
+
+    def count_unassigned_tracks(self) -> int:
+        with self._reading() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM tracks t LEFT JOIN crate_tracks ct ON ct.track_id=t.id WHERE ct.track_id IS NULL"
+            ).fetchone()[0])
+
+    def crate_suggestion_rows(self, include_assigned: bool = False) -> list[TrackRecord]:
+        filters = TrackFilter(limit=100000, offset=0)
+        records = self.list_tracks(filters)
+        return records if include_assigned else [record for record in records if record.crate_id is None]
 
     def delete_crate(self, crate_id: int) -> None:
         with self._writing() as conn:
@@ -927,10 +1064,13 @@ class VaultDatabase:
         # in the common "filter by genre only" case.
         clauses: list[str] = []
         params: list[Any] = []
-        joins = ""
+        joins = (
+            " LEFT JOIN crate_tracks membership ON membership.track_id = tracks.id "
+            " LEFT JOIN crates assigned_crate ON assigned_crate.id = membership.crate_id "
+        )
 
         if filt.query and filt.query.strip():
-            joins = " JOIN tracks_fts ON tracks_fts.rowid = tracks.id "
+            joins += " JOIN tracks_fts ON tracks_fts.rowid = tracks.id "
             clauses.append("tracks_fts MATCH ?")
             params.append(_sanitize_fts_query(filt.query))
 
@@ -962,13 +1102,14 @@ class VaultDatabase:
             clauses.append("tracks.tags LIKE ?")
             params.append(f'%"{filt.tag}"%')
         if filt.crate_id is not None:
-            joins += (
-                " JOIN crate_tracks ON crate_tracks.track_id = tracks.id "
-                "AND crate_tracks.crate_id = ? "
-            )
+            clauses.append("membership.crate_id = ?")
             # crate param must precede any WHERE params bound after joins;
             # insert it at the front of the params list to match SQL order.
-            params.insert(0, int(filt.crate_id))
+            params.append(int(filt.crate_id))
+        if filt.unassigned is True:
+            clauses.append("membership.track_id IS NULL")
+        elif filt.unassigned is False:
+            clauses.append("membership.track_id IS NOT NULL")
 
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
@@ -981,7 +1122,9 @@ class VaultDatabase:
         direction = "DESC" if filt.order_desc else "ASC"
 
         sql = (
-            f"SELECT tracks.* FROM tracks{joins}{where} "
+            f"SELECT tracks.*, assigned_crate.id AS assigned_crate_id, "
+            f"assigned_crate.name AS assigned_crate_name, "
+            f"assigned_crate.color AS assigned_crate_color FROM tracks{joins}{where} "
             f"ORDER BY tracks.{order_col} {direction}, tracks.id {direction} "
             f"LIMIT ? OFFSET ?"
         )
@@ -1403,6 +1546,9 @@ def _row_to_track(row: sqlite3.Row) -> TrackRecord:
         rating=row["rating"],
         notes=row["notes"],
         tags=tags,
+        crate_id=row["assigned_crate_id"] if "assigned_crate_id" in row.keys() else None,
+        crate_name=row["assigned_crate_name"] if "assigned_crate_name" in row.keys() else None,
+        crate_color=row["assigned_crate_color"] if "assigned_crate_color" in row.keys() else None,
     )
 
 

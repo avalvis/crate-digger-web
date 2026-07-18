@@ -108,6 +108,23 @@ export interface paths {
         patch: operations["patch_track_api_tracks__track_id__patch"];
         trace?: never;
     };
+    "/api/tracks/{track_id}/location": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Track Location */
+        get: operations["track_location_api_tracks__track_id__location_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tracks/{track_id}/audio": {
         parameters: {
             query?: never;
@@ -452,17 +469,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/crates/{crate_id}/tracks": {
+    "/api/crates/overview": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Crate Overview */
+        get: operations["crate_overview_api_crates_overview_get"];
         put?: never;
-        /** Add Crate Tracks */
-        post: operations["add_crate_tracks_api_crates__crate_id__tracks_post"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/crates/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Crate Suggestions */
+        get: operations["crate_suggestions_api_crates_suggestions_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -476,11 +510,32 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get Crate */
+        get: operations["get_crate_api_crates__crate_id__get"];
         put?: never;
         post?: never;
         /** Delete Crate */
         delete: operations["delete_crate_api_crates__crate_id__delete"];
+        options?: never;
+        head?: never;
+        /** Patch Crate */
+        patch: operations["patch_crate_api_crates__crate_id__patch"];
+        trace?: never;
+    };
+    "/api/crates/{crate_id}/tracks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Assign Crate Tracks */
+        put: operations["assign_crate_tracks_api_crates__crate_id__tracks_put"];
+        /** Add Crate Tracks Compat */
+        post: operations["add_crate_tracks_compat_api_crates__crate_id__tracks_post"];
+        /** Remove Crate Tracks */
+        delete: operations["remove_crate_tracks_api_crates__crate_id__tracks_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -544,13 +599,48 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
+            /**
+             * Color
+             * @default #F4DF00
+             */
+            color: string;
             /** Created At */
             created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
             /**
              * Track Count
              * @default 0
              */
             track_count: number;
+        };
+        /** CrateAssignmentRequest */
+        CrateAssignmentRequest: {
+            /** Track Ids */
+            track_ids: number[];
+            /**
+             * Allow Moves
+             * @default false
+             */
+            allow_moves: boolean;
+        };
+        /** CrateAssignmentResult */
+        CrateAssignmentResult: {
+            /**
+             * Assigned
+             * @default 0
+             */
+            assigned: number;
+            /**
+             * Moved
+             * @default 0
+             */
+            moved: number;
+            /**
+             * Unchanged
+             * @default 0
+             */
+            unchanged: number;
         };
         /** CrateCreate */
         CrateCreate: {
@@ -558,9 +648,81 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
+            /**
+             * Color
+             * @default #F4DF00
+             */
+            color: string;
         };
-        /** CrateTracks */
-        CrateTracks: {
+        /** CrateDetail */
+        CrateDetail: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Color
+             * @default #F4DF00
+             */
+            color: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Track Count
+             * @default 0
+             */
+            track_count: number;
+            tracks: components["schemas"]["TrackPage"];
+        };
+        /** CrateOverview */
+        CrateOverview: {
+            /** Items */
+            items: components["schemas"]["Crate"][];
+            /** Unassigned Count */
+            unassigned_count: number;
+        };
+        /** CratePatch */
+        CratePatch: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Color */
+            color: string;
+        };
+        /** CrateRef */
+        CrateRef: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Color */
+            color: string;
+        };
+        /** CrateSuggestion */
+        CrateSuggestion: {
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "month" | "genre" | "mood";
+            /** Label */
+            label: string;
+            /** Proposed Name */
+            proposed_name: string;
+            /** Track Ids */
+            track_ids: number[];
+            /** Count */
+            count: number;
+        };
+        /** CrateTrackRemoval */
+        CrateTrackRemoval: {
             /** Track Ids */
             track_ids: number[];
         };
@@ -1021,6 +1183,14 @@ export interface components {
              * @enum {string}
              */
             output_format: "m4a" | "mp3" | "wav";
+            crate?: components["schemas"]["CrateRef"] | null;
+        };
+        /** TrackLocation */
+        TrackLocation: {
+            /** File Path */
+            file_path: string;
+            /** Available */
+            available: boolean;
         };
         /** TrackPage */
         TrackPage: {
@@ -1259,6 +1429,7 @@ export interface operations {
                 min_rating?: number | null;
                 tag?: string | null;
                 crate_id?: number | null;
+                unassigned?: boolean | null;
                 limit?: number;
                 offset?: number;
                 order_by?: string;
@@ -1357,6 +1528,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Track"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    track_location_api_tracks__track_id__location_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                track_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackLocation"];
                 };
             };
             /** @description Validation Error */
@@ -2233,9 +2440,81 @@ export interface operations {
             };
         };
     };
-    add_crate_tracks_api_crates__crate_id__tracks_post: {
+    crate_overview_api_crates_overview_get: {
         parameters: {
             query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrateOverview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    crate_suggestions_api_crates_suggestions_get: {
+        parameters: {
+            query?: {
+                include_assigned?: boolean;
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrateSuggestion"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_crate_api_crates__crate_id__get: {
+        parameters: {
+            query?: {
+                query?: string | null;
+                limit?: number;
+                offset?: number;
                 token?: string | null;
             };
             header?: {
@@ -2247,11 +2526,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CrateTracks"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -2259,9 +2534,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: number;
-                    };
+                    "application/json": components["schemas"]["CrateDetail"];
                 };
             };
             /** @description Validation Error */
@@ -2297,6 +2570,168 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_crate_api_crates__crate_id__patch: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                crate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CratePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Crate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assign_crate_tracks_api_crates__crate_id__tracks_put: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                crate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrateAssignmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrateAssignmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_crate_tracks_compat_api_crates__crate_id__tracks_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                crate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrateAssignmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrateAssignmentResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_crate_tracks_api_crates__crate_id__tracks_delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                crate_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrateTrackRemoval"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
             };
             /** @description Validation Error */
             422: {

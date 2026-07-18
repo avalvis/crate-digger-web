@@ -12,7 +12,7 @@ const titles: Record<string, [string, string]> = {
 
 export function Topbar({ query, onQuery }: { query: string; onQuery: (value: string) => void }) {
   const location = useLocation()
-  const [plain, accent] = titles[location.pathname] || ['CRATE', 'DIGGER']
+  const [plain, accent] = location.pathname.startsWith('/crates/') ? ['OPEN', 'CRATE'] : titles[location.pathname] || ['CRATE', 'DIGGER']
   return (
     <header className="topbar" data-tauri-drag-region>
       <h1>{plain} <span>{accent}</span></h1>

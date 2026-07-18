@@ -393,6 +393,94 @@ input:focus, textarea:focus { border-color: #7b7410; box-shadow: 0 0 0 1px #7b74
 .crate-card h3 { margin: 5px 0 7px; font-size: 16px; text-transform: uppercase; }
 .crate-card p { color: #797b74; font-size: 10px; line-height: 1.45; }
 .crate-card small { color: var(--yellow); font-size: 9px; text-transform: uppercase; }
+
+.text-button { padding: 5px; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: #8e9088; font-size: 8px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.text-button:hover { color: var(--yellow); }
+.danger-text, .button--danger { color: #ff776d; }
+.button--danger { border: 1px solid #7b332e; background: #321815; }
+.check-cell { width: 34px; padding-left: 12px !important; padding-right: 4px !important; }
+.check-cell input, .assignment-track-list input, .suggestion-tracks input { accent-color: var(--yellow); }
+.vault-table tbody tr.is-selected { background: #24230f; box-shadow: inset 3px 0 var(--yellow); }
+.crate-badge, .unassigned-badge { max-width: 145px; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; font-size: 8px; font-weight: 800; text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; }
+.crate-badge i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 2px; background: var(--crate-color); box-shadow: 0 0 8px color-mix(in srgb, var(--crate-color), transparent 45%); }
+.unassigned-badge { color: #686a63; }
+.reveal-track { color: #777971; }
+.reveal-track:hover { color: var(--yellow); }
+.vault-selection-bar { min-height: 51px; margin-bottom: 9px; padding: 8px 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #565119; background: linear-gradient(90deg, #24230e, #171810); }
+.vault-selection-bar > span { margin-right: auto; color: #a8a66f; font-size: 9px; text-transform: uppercase; }
+.vault-selection-bar > span strong { color: var(--yellow); }
+.vault-filter { height: 33px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #34352f; background: #11120f; color: #777970; font-size: 8px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.vault-filter.active { border-color: #69631a; color: var(--yellow); background: #23220e; }
+.inspector-actions { display: flex; gap: 7px; margin-top: 13px; }
+.inspector-crate { margin: 15px 0; padding: 11px 12px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #30312c; background: #0d0e0c; }
+.inspector-crate > div { display: flex; align-items: center; gap: 8px; }
+.inspector-crate span { display: flex; flex-direction: column; gap: 3px; }
+.inspector-crate strong { color: #ddd; font-size: 9px; text-transform: uppercase; }
+.inspector-crate small { color: #70726b; font-size: 8px; }
+
+.assignment-dialog, .crate-editor { position: fixed; z-index: 31; left: 50%; top: 50%; width: min(650px, 92vw); max-height: 86vh; overflow: auto; transform: translate(-50%, -50%); padding: 25px; border: 1px solid #3d3e37; background: #121310; box-shadow: 0 24px 90px #000e; }
+.assignment-picker { margin: 18px 0 10px; }
+.assignment-search, .crate-detail-toolbar label { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid #30312c; background: #0c0d0b; color: #6f7169; }
+.assignment-search input, .crate-detail-toolbar input { width: 100%; border: 0; outline: 0; background: transparent; color: #ddd; }
+.assignment-track-list { max-height: 225px; overflow: auto; border: 1px solid #30312c; border-top: 0; }
+.assignment-track-list label, .suggestion-tracks label { min-height: 46px; padding: 8px 10px; display: flex; align-items: center; gap: 9px; border-top: 1px solid #252621; cursor: pointer; }
+.assignment-track-list label.selected, .suggestion-tracks label.selected { background: #21200d; }
+.assignment-track-list span, .suggestion-tracks span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.assignment-track-list strong, .suggestion-tracks strong { overflow: hidden; color: #ddd; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.assignment-track-list small, .suggestion-tracks small { color: #72746c; font-size: 8px; }
+.assignment-summary { min-height: 40px; margin: 12px 0; padding: 9px 11px; display: flex; align-items: center; gap: 8px; border: 1px solid #33342e; color: var(--yellow); }
+.assignment-summary small { margin-left: auto; color: #72746c; }
+.assignment-target { margin-bottom: 16px; }
+.assignment-target select { width: 100%; }
+.new-crate-inline { padding: 12px; border: 1px solid #3a3b31; background: #0d0e0c; }
+.crate-color-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.crate-color-row > button { width: 26px; height: 26px; border: 2px solid transparent; border-radius: 3px; cursor: pointer; }
+.crate-color-row > button.active { border-color: white; box-shadow: 0 0 0 2px #000, 0 0 10px currentColor; }
+.crate-color-row > input[type=color] { width: 31px; height: 28px; padding: 2px; border: 1px solid #555; background: #111; }
+.assignment-conflict { margin: 12px 0; padding: 11px 13px; display: flex; flex-direction: column; gap: 5px; border: 1px solid #76572c; background: #251b0e; }
+.assignment-conflict strong { color: #e5b268; font-size: 9px; text-transform: uppercase; }
+.assignment-conflict span, .assignment-conflict p { margin: 0; color: #9f8e72; font-size: 8px; }
+
+.crate-heading-actions, .crate-detail-actions { display: flex; align-items: center; gap: 8px; }
+.crates-page .page-heading p { margin: 5px 0 0; color: #6f716a; font-size: 9px; }
+.crate-card { cursor: pointer; transition: transform .16s ease, border-color .16s ease, background .16s ease; }
+.crate-card:hover { transform: translateY(-2px); border-color: #555221; background: #17180f; }
+.crate-cover { position: relative; display: grid; place-items: center; overflow: hidden; color: #111; background: linear-gradient(145deg, color-mix(in srgb, var(--crate-color), white 20%), var(--crate-color)); box-shadow: inset 0 0 0 1px #ffffff45; }
+.crate-cover::after { content: ''; position: absolute; inset: 12px; border: 1px solid #0003; box-shadow: inset 0 0 22px #0002; }
+.crate-cover span { position: absolute; right: 7px; bottom: 6px; min-width: 22px; padding: 3px; color: var(--crate-color); background: #111; text-align: center; font-size: 8px; }
+.crate-editor .field { margin: 14px 0; }
+.crate-color-field { margin: 17px 0; padding: 0; border: 0; }
+.crate-color-field legend { margin-bottom: 8px; color: #8d8f87; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.custom-color { display: flex; align-items: center; gap: 5px; color: #777970; font-size: 8px; text-transform: uppercase; }
+.custom-color input { width: 31px; height: 28px; padding: 2px; border: 1px solid #555; background: #111; }
+.delete-confirm { margin: 15px 0; padding: 10px; display: flex; align-items: center; gap: 8px; border: 1px solid #6b302c; background: #251210; }
+.delete-confirm span { margin-right: auto; color: #bc7770; font-size: 8px; }
+
+.organizer-dialog { position: fixed; z-index: 31; left: 50%; top: 50%; width: min(920px, 94vw); max-height: 88vh; overflow: auto; transform: translate(-50%, -50%); padding: 25px; border: 1px solid #3d3e37; background: #121310; box-shadow: 0 24px 90px #000e; }
+.organizer-tabs { margin: 17px 0 10px; display: flex; align-items: center; gap: 5px; }
+.organizer-tabs button { height: 31px; padding: 0 13px; border: 1px solid #32332d; background: #0e0f0d; color: #777970; font-size: 8px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.organizer-tabs button.active { border-color: #6a6418; background: #24230e; color: var(--yellow); }
+.organizer-tabs label { margin-left: auto; color: #85877f; font-size: 8px; text-transform: uppercase; }
+.organizer-tabs input { accent-color: var(--yellow); }
+.organizer-layout { min-height: 390px; display: grid; grid-template-columns: 230px 1fr; border: 1px solid #30312c; }
+.suggestion-list { max-height: 430px; overflow: auto; padding: 7px; border-right: 1px solid #30312c; background: #0d0e0c; }
+.suggestion-list button { width: 100%; min-height: 39px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; border: 0; border-bottom: 1px solid #252621; background: transparent; color: #999b93; font-size: 9px; text-align: left; cursor: pointer; }
+.suggestion-list button.active { background: #26240d; color: var(--yellow); }
+.suggestion-list button strong { min-width: 25px; color: #65675f; text-align: right; }
+.suggestion-list p { padding: 12px; color: #666860; font-size: 9px; }
+.suggestion-preview { min-width: 0; padding: 14px; }
+.organizer-placeholder { min-height: 350px; display: grid; place-content: center; justify-items: center; gap: 10px; color: #696b63; font-size: 9px; }
+.suggestion-fields { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 14px; margin-bottom: 10px; }
+.suggestion-tracks { max-height: 290px; overflow: auto; border: 1px solid #2d2e29; }
+.organizer-count { margin-right: auto; color: #777970; font-size: 8px; text-transform: uppercase; }
+
+.crate-detail-heading { min-height: 105px; margin-bottom: 12px; padding: 15px; display: grid; grid-template-columns: 35px 72px 1fr auto; align-items: center; gap: 13px; border: 1px solid #30312c; background: linear-gradient(100deg, #11120f, #181910); }
+.crate-detail-heading h2 { margin: 4px 0; color: #eee; text-transform: uppercase; }
+.crate-detail-heading p { margin: 0; color: #74766e; font-size: 9px; }
+.crate-detail-mark { width: 68px; height: 68px; display: grid; place-items: center; color: #111; background: var(--crate-color); box-shadow: inset 0 0 0 7px #0002, 0 7px 18px #0005; }
+.crate-detail-toolbar { min-height: 48px; padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #2d2e29; border-bottom: 0; background: #151613; }
+.crate-detail-toolbar label { width: min(420px, 55%); }
+.crate-detail-toolbar > span { color: #777970; font-size: 8px; text-transform: uppercase; }
 .crate-cover { height: 100px; display: grid; place-items: center; position: relative; color: #efefe9; background: linear-gradient(135deg, #45433a, #171713); }
 .crate-cover span { position: absolute; right: 7px; bottom: 5px; color: var(--yellow); font-size: 9px; }
 .crate-cover--2 { background: linear-gradient(135deg, #5b3126, #1d1210); }

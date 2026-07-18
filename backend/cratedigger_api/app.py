@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
@@ -12,15 +13,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.database import RecordNotFoundError, TrackFilter
+from core.database import (
+    CrateAssignmentConflictError,
+    DatabaseError,
+    RecordNotFoundError,
+    TrackFilter,
+)
 
 from .events import EventHub
 from .models import (
     ConfigPatch,
     ConfigResponse,
     Crate,
+    CrateAssignmentRequest,
+    CrateAssignmentResult,
     CrateCreate,
-    CrateTracks,
+    CrateDetail,
+    CrateOverview,
+    CratePatch,
+    CrateRef,
+    CrateSuggestion,
+    CrateTrackRemoval,
     DiscoveryFilters,
     DiscoveryInteractionRequest,
     DiscoveryRematchRequest,
@@ -41,6 +54,7 @@ from .models import (
     SecretPatch,
     Suggestion,
     Track,
+    TrackLocation,
     TrackPage,
     TrackPatch,
 )
@@ -75,6 +89,8 @@ def _track(record: Any) -> Track:
         file_available=Path(record.file_path).exists(),
         artwork_url=(f"/api/tracks/{int(record.id)}/artwork" if record.artwork_embedded or (Path(record.file_path).parent / "cover.jpg").exists() else None),
         output_format=(Path(record.file_path).suffix.lower().lstrip(".") if Path(record.file_path).suffix.lower() in {".m4a", ".mp3", ".wav"} else "m4a"),
+        crate=(CrateRef(id=record.crate_id, name=record.crate_name, color=record.crate_color)
+               if record.crate_id is not None else None),
     )
 
 
@@ -215,6 +231,7 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         min_rating: int | None = None,
         tag: str | None = None,
         crate_id: int | None = None,
+        unassigned: bool | None = None,
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
         order_by: str = "date_added",
@@ -223,7 +240,8 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         filters = dict(
             query=query, genre=genre, decade=decade, min_bpm=min_bpm, max_bpm=max_bpm,
             camelot_key=camelot_key, has_stems=has_stems, min_rating=min_rating, tag=tag,
-            crate_id=crate_id, limit=limit, offset=offset, order_by=order_by, order_desc=order_desc,
+            crate_id=crate_id, unassigned=unassigned, limit=limit, offset=offset,
+            order_by=order_by, order_desc=order_desc,
         )
         records, total = core.list_tracks(**filters)
         return TrackPage(items=[_track(item) for item in records], total=total, limit=limit, offset=offset)
@@ -247,6 +265,14 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             return _track(core.db.get_track(track_id))
         except RecordNotFoundError as exc:
             raise _error("track_not_found", "Track not found", 404) from exc
+
+    @app.get("/api/tracks/{track_id}/location", response_model=TrackLocation)
+    def track_location(track_id: int, _: Guard, core: Runtime) -> TrackLocation:
+        try:
+            path = Path(core.db.get_track(track_id).file_path)
+        except RecordNotFoundError as exc:
+            raise _error("track_not_found", "Track not found", 404) from exc
+        return TrackLocation(file_path=str(path), available=path.is_file())
 
     @app.get("/api/tracks/{track_id}/audio")
     def track_audio(track_id: int, request: Request, _: Guard, core: Runtime) -> Any:
@@ -463,12 +489,117 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
 
     @app.post("/api/crates", response_model=Crate, status_code=201)
     def create_crate(payload: CrateCreate, _: Guard, core: Runtime) -> Crate:
-        crate_id = core.db.create_crate(payload.name, payload.description)
-        return next(_crate(item) for item in core.db.list_crates() if item.id == crate_id)
+        try:
+            crate_id = core.db.create_crate(payload.name, payload.description, payload.color.upper())
+            return _crate(core.db.get_crate(crate_id))
+        except DatabaseError as exc:
+            raise _error("crate_conflict", str(exc), 409) from exc
 
-    @app.post("/api/crates/{crate_id}/tracks")
-    def add_crate_tracks(crate_id: int, payload: CrateTracks, _: Guard, core: Runtime) -> dict[str, int]:
-        return {"added": core.db.add_tracks_to_crate(crate_id, payload.track_ids)}
+    @app.get("/api/crates/overview", response_model=CrateOverview)
+    def crate_overview(_: Guard, core: Runtime) -> CrateOverview:
+        return CrateOverview(
+            items=[_crate(item) for item in core.db.list_crates()],
+            unassigned_count=core.db.count_unassigned_tracks(),
+        )
+
+    @app.get("/api/crates/suggestions", response_model=list[CrateSuggestion])
+    def crate_suggestions(
+        _: Guard, core: Runtime, include_assigned: bool = False
+    ) -> list[CrateSuggestion]:
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for track in core.db.crate_suggestion_rows(include_assigned):
+            values: list[tuple[str, str, str]] = []
+            month = (track.date_added or "")[:7]
+            if len(month) == 7:
+                try:
+                    label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+                    values.append(("month", month, label))
+                except ValueError:
+                    pass
+            if track.genre and track.genre.strip():
+                label = track.genre.strip()
+                values.append(("genre", label.casefold(), label))
+            for tag in track.tags:
+                label = tag.strip()
+                if label:
+                    values.append(("mood", label.casefold(), label))
+            for kind, value, label in values:
+                group = groups.setdefault(
+                    (kind, value), {"kind": kind, "label": label, "track_ids": []}
+                )
+                group["track_ids"].append(int(track.id))
+        suggestions = [
+            CrateSuggestion(
+                key=f"{kind}:{value}", kind=group["kind"], label=group["label"],
+                proposed_name=group["label"], track_ids=group["track_ids"],
+                count=len(group["track_ids"]),
+            )
+            for (kind, value), group in groups.items()
+        ]
+        return sorted(suggestions, key=lambda item: (item.kind, -item.count, item.label.casefold()))
+
+    @app.get("/api/crates/{crate_id}", response_model=CrateDetail)
+    def get_crate(
+        crate_id: int, _: Guard, core: Runtime, query: str | None = None,
+        limit: int = Query(default=250, ge=1, le=500), offset: int = Query(default=0, ge=0),
+    ) -> CrateDetail:
+        try:
+            crate = core.db.get_crate(crate_id)
+        except RecordNotFoundError as exc:
+            raise _error("crate_not_found", "Crate not found", 404) from exc
+        records, total = core.list_tracks(
+            query=query, crate_id=crate_id, limit=limit, offset=offset,
+            order_by="date_added", order_desc=True,
+        )
+        return CrateDetail(
+            **_crate(crate).model_dump(),
+            tracks=TrackPage(items=[_track(item) for item in records], total=total, limit=limit, offset=offset),
+        )
+
+    @app.patch("/api/crates/{crate_id}", response_model=Crate)
+    def patch_crate(crate_id: int, payload: CratePatch, _: Guard, core: Runtime) -> Crate:
+        try:
+            return _crate(core.db.update_crate(
+                crate_id, name=payload.name, description=payload.description,
+                color=payload.color.upper(),
+            ))
+        except RecordNotFoundError as exc:
+            raise _error("crate_not_found", "Crate not found", 404) from exc
+        except DatabaseError as exc:
+            raise _error("crate_conflict", str(exc), 409) from exc
+
+    @app.put("/api/crates/{crate_id}/tracks", response_model=CrateAssignmentResult)
+    def assign_crate_tracks(
+        crate_id: int, payload: CrateAssignmentRequest, _: Guard, core: Runtime
+    ) -> CrateAssignmentResult:
+        try:
+            return CrateAssignmentResult(**dataclasses.asdict(core.db.assign_tracks_to_crate(
+                crate_id, payload.track_ids, allow_moves=payload.allow_moves,
+            )))
+        except CrateAssignmentConflictError as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": "crate_assignment_conflict",
+                "message": "Some selected tracks already belong to another crate.",
+                "conflicts": exc.conflicts,
+            }) from exc
+        except RecordNotFoundError as exc:
+            raise _error("not_found", str(exc), 404) from exc
+
+    @app.post("/api/crates/{crate_id}/tracks", response_model=CrateAssignmentResult)
+    def add_crate_tracks_compat(
+        crate_id: int, payload: CrateAssignmentRequest, _: Guard, core: Runtime
+    ) -> CrateAssignmentResult:
+        return assign_crate_tracks(crate_id, payload, _, core)
+
+    @app.delete("/api/crates/{crate_id}/tracks")
+    def remove_crate_tracks(
+        crate_id: int, payload: CrateTrackRemoval, _: Guard, core: Runtime
+    ) -> dict[str, int]:
+        try:
+            core.db.get_crate(crate_id)
+        except RecordNotFoundError as exc:
+            raise _error("crate_not_found", "Crate not found", 404) from exc
+        return {"removed": core.db.remove_tracks_from_crate(crate_id, payload.track_ids)}
 
     @app.delete("/api/crates/{crate_id}", status_code=204)
     def delete_crate(crate_id: int, _: Guard, core: Runtime) -> None:

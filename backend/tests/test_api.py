@@ -85,6 +85,72 @@ def test_config_and_crate_contracts(tmp_path: Path) -> None:
         assert client.delete(f"/api/crates/{crate_id}", headers=HEADERS).status_code == 204
 
 
+def test_exclusive_crate_api_suggestions_and_file_location(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    first_file = tmp_path / "first.m4a"
+    second_file = tmp_path / "second.m4a"
+    first_file.write_bytes(b"first")
+    second_file.write_bytes(b"second")
+    with client_for(tmp_path) as client:
+        db = VaultDatabase(data_dir / "vault.db")
+        first = db.upsert_track(TrackRecord(
+            file_path=str(first_file), artist="Alice", title="First", genre="Jazz",
+            tags=["dreamy"], source_url="https://example.com/first", source_platform="manual",
+        ))
+        second = db.upsert_track(TrackRecord(
+            file_path=str(second_file), artist="Bob", title="Second", genre="Jazz",
+            tags=["dreamy"], source_url="https://example.com/second", source_platform="manual",
+        ))
+        db.close()
+        dusty = client.post("/api/crates", headers=HEADERS, json={"name": "Dusty", "color": "#D47432"}).json()
+        night = client.post("/api/crates", headers=HEADERS, json={"name": "Night", "color": "#3D6F9D"}).json()
+
+        assigned = client.put(
+            f"/api/crates/{dusty['id']}/tracks", headers=HEADERS,
+            json={"track_ids": [first, second], "allow_moves": False},
+        )
+        assert assigned.json() == {"assigned": 2, "moved": 0, "unchanged": 0}
+        assert client.get(f"/api/tracks/{first}", headers=HEADERS).json()["crate"]["name"] == "Dusty"
+
+        conflict = client.put(
+            f"/api/crates/{night['id']}/tracks", headers=HEADERS,
+            json={"track_ids": [first], "allow_moves": False},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["conflicts"][0]["crate_name"] == "Dusty"
+        moved = client.put(
+            f"/api/crates/{night['id']}/tracks", headers=HEADERS,
+            json={"track_ids": [first], "allow_moves": True},
+        )
+        assert moved.json()["moved"] == 1
+
+        detail = client.get(f"/api/crates/{night['id']}", headers=HEADERS).json()
+        assert detail["tracks"]["items"][0]["id"] == first
+        updated = client.patch(
+            f"/api/crates/{night['id']}", headers=HEADERS,
+            json={"name": "Night Loops", "description": "After hours", "color": "#72509D"},
+        )
+        assert updated.json()["color"] == "#72509D"
+        location = client.get(f"/api/tracks/{first}/location", headers=HEADERS).json()
+        assert location == {"file_path": str(first_file), "available": True}
+
+        unassigned_suggestions = client.get("/api/crates/suggestions", headers=HEADERS).json()
+        assert unassigned_suggestions == []
+        all_suggestions = client.get(
+            "/api/crates/suggestions?include_assigned=true", headers=HEADERS,
+        ).json()
+        assert any(item["kind"] == "genre" and item["label"] == "Jazz" for item in all_suggestions)
+        assert any(item["kind"] == "mood" and item["label"] == "dreamy" for item in all_suggestions)
+
+        removed = client.request(
+            "DELETE", f"/api/crates/{night['id']}/tracks", headers=HEADERS,
+            json={"track_ids": [first]},
+        )
+        assert removed.json() == {"removed": 1}
+        assert client.get("/api/crates/overview", headers=HEADERS).json()["unassigned_count"] == 1
+
+
 def test_blank_library_paths_are_restored_to_defaults(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()

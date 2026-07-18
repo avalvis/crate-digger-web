@@ -75,6 +75,7 @@ export default function App() {
             <Route path="/manual-rip" element={<ManualRip />} />
             <Route path="/vault" element={<Vault query={vaultQuery} />} />
             <Route path="/crates" element={<Crates />} />
+            <Route path="/crates/:crateId" element={<Crates />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -28,3 +28,9 @@ export async function openFolder(path: string) {
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('open_directory', { path })
 }
+
+export async function revealFile(path: string) {
+  if (!window.__TAURI_INTERNALS__) throw new Error('Revealing files is available in the desktop app.')
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('reveal_file', { path })
+}

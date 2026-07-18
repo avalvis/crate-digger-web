@@ -39,6 +39,7 @@ class Track(ApiModel):
     file_available: bool = False
     artwork_url: str | None = None
     output_format: Literal["m4a", "mp3", "wav"] = "m4a"
+    crate: CrateRef | None = None
 
 
 class TrackPage(ApiModel):
@@ -202,21 +203,70 @@ class MpcJob(ApiModel):
     track_dir: str | None = None
 
 
+class CrateRef(ApiModel):
+    id: int
+    name: str
+    color: str
+
+
 class Crate(ApiModel):
     id: int
     name: str
     description: str | None = None
+    color: str = "#F4DF00"
     created_at: str | None = None
+    updated_at: str | None = None
     track_count: int = 0
 
 
 class CrateCreate(ApiModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
+    color: str = Field(default="#F4DF00", pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
-class CrateTracks(ApiModel):
+class CratePatch(ApiModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+class CrateAssignmentRequest(ApiModel):
     track_ids: list[int] = Field(min_length=1)
+    allow_moves: bool = False
+
+
+class CrateTrackRemoval(ApiModel):
+    track_ids: list[int] = Field(min_length=1)
+
+
+class CrateAssignmentResult(ApiModel):
+    assigned: int = 0
+    moved: int = 0
+    unchanged: int = 0
+
+
+class CrateSuggestion(ApiModel):
+    key: str
+    kind: Literal["month", "genre", "mood"]
+    label: str
+    proposed_name: str
+    track_ids: list[int]
+    count: int
+
+
+class CrateDetail(Crate):
+    tracks: TrackPage
+
+
+class CrateOverview(ApiModel):
+    items: list[Crate]
+    unassigned_count: int
+
+
+class TrackLocation(ApiModel):
+    file_path: str
+    available: bool
 
 
 class ConfigResponse(ApiModel):

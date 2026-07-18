@@ -35,12 +35,34 @@ fn validated_directory(path: &str) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+fn validated_file(path: &str) -> Result<PathBuf, String> {
+    let candidate = PathBuf::from(path);
+    if path.trim().is_empty() || !candidate.is_absolute() {
+        return Err("The file path must be absolute.".into());
+    }
+    let file = candidate
+        .canonicalize()
+        .map_err(|_| format!("File does not exist or is unavailable: {path}"))?;
+    if !file.is_file() {
+        return Err(format!("The selected path is not a file: {path}"));
+    }
+    Ok(file)
+}
+
 #[tauri::command]
 fn open_directory(app: AppHandle, path: String) -> Result<(), String> {
     let directory = validated_directory(&path)?;
     app.opener()
         .open_path(directory.to_string_lossy(), None::<&str>)
         .map_err(|error| format!("Could not open folder: {error}"))
+}
+
+#[tauri::command]
+fn reveal_file(app: AppHandle, path: String) -> Result<(), String> {
+    let file = validated_file(&path)?;
+    app.opener()
+        .reveal_item_in_dir(file)
+        .map_err(|error| format!("Could not reveal file: {error}"))
 }
 
 fn available_port() -> u16 {
@@ -103,7 +125,11 @@ pub fn run() {
             app.manage(Mutex::new(Some(child)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api_config, open_directory])
+        .invoke_handler(tauri::generate_handler![
+            api_config,
+            open_directory,
+            reveal_file
+        ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(child) = window
@@ -121,7 +147,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::validated_directory;
+    use super::{validated_directory, validated_file};
 
     #[test]
     fn accepts_existing_absolute_directories_only() {
@@ -132,11 +158,18 @@ mod tests {
         );
 
         let executable = std::env::current_exe().unwrap();
+        assert_eq!(
+            validated_file(&executable.to_string_lossy()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
         assert!(validated_directory(&executable.to_string_lossy())
             .unwrap_err()
             .contains("not a folder"));
         assert!(validated_directory("relative/folder")
             .unwrap_err()
             .contains("absolute"));
+        assert!(validated_file(&temporary.to_string_lossy())
+            .unwrap_err()
+            .contains("not a file"));
     }
 }
