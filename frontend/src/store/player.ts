@@ -32,6 +32,7 @@ interface PlayerState {
   selectIndex: (index: number, mode?: 'quick' | 'full') => void
   selectRelative: (direction: -1 | 1) => void
   requestFull: () => void
+  replaceReelSource: (masterId: number, suggestion: Suggestion) => void
   cachePrepared: (id: string, response: PreviewResponse, audioUrl: string, token: number) => void
   preparationFailed: (id: string, token: number) => void
   setPlaying: (playing: boolean) => void
@@ -71,7 +72,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   muted: false,
   shuffle: false,
   repeat: false,
-  spectrum: Array.from({ length: 32 }, () => 0.08),
+  spectrum: Array.from({ length: 48 }, () => 0.08),
   setTrack: (track) => set((state) => ({
     track,
     playlist: [track],
@@ -123,6 +124,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     playing: state.track.partial === false,
     requestToken: state.requestToken + 1,
   }) : state),
+  replaceReelSource: (masterId, suggestion) => set((state) => {
+    const replace = (item: PlayerTrack) => {
+      if (item.discoverySuggestion?.discogs_master_id !== masterId) return item
+      const sameAudio = item.videoId === suggestion.youtube_video_id
+      return reelTrack(suggestion, sameAudio ? item : undefined)
+    }
+    return {
+      playlist: state.playlist.map(replace),
+      track: state.track ? replace(state.track) : null,
+    }
+  }),
   cachePrepared: (id, response, audioUrl, token) => set((state) => {
     const update = (item: PlayerTrack) => item.id === id ? {
       ...item, audioUrl, peaks: response.peaks, partial: response.partial,

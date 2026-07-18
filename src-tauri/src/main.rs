@@ -3,4 +3,3 @@
 fn main() {
     crate_digger_lib::run();
 }
-

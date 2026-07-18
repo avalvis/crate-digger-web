@@ -5,12 +5,22 @@ import WaveSurfer from 'wavesurfer.js'
 import Regions from 'wavesurfer.js/dist/plugins/regions.esm.js'
 import { Slider } from 'radix-ui'
 import { api, mediaUrl } from '../lib/api'
+import { measuredListeningDelta } from '../lib/listening'
+import { useDigitalCrateStore } from '../store/digitalCrate'
 import { usePlayerStore } from '../store/player'
 import { useToastStore } from '../store/toast'
 
 function duration(value: number) {
   if (!Number.isFinite(value)) return '0:00'
   return `${Math.floor(value / 60)}:${Math.floor(value % 60).toString().padStart(2, '0')}`
+}
+
+function versionedPreviewPath(path: string, partial: boolean) {
+  const joiner = path.includes('?') ? '&' : '?'
+  // Quick and full audio share one API route. Give each representation a
+  // distinct media URL so WebView/WaveSurfer cannot reuse the cached 45s file
+  // after the backend has upgraded that route to the complete track.
+  return `${path}${joiner}variant=${partial ? 'quick' : 'full'}`
 }
 
 export function PlayerBar({ onQueue }: { onQueue: () => void }) {
@@ -52,7 +62,10 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
     const token = requestToken
     let disposed = false
     api.preview(track.videoId, requestedMode)
-      .then(async (prepared) => ({ prepared, audioUrl: await mediaUrl(prepared.audio_url) }))
+      .then(async (prepared) => ({
+        prepared,
+        audioUrl: await mediaUrl(versionedPreviewPath(prepared.audio_url, prepared.partial)),
+      }))
       .then(({ prepared, audioUrl }) => {
         if (!disposed) {
           cachePrepared(id, prepared, audioUrl, token)
@@ -94,15 +107,47 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
       plugins: [regions],
     })
     instance.setVolume(muted ? 0 : volume)
+    let previousMediaSeconds: number | null = null
+    let previousWallMs: number | null = null
+    const resetListeningClock = () => {
+      previousMediaSeconds = null
+      previousWallMs = null
+    }
     instance.on('ready', (seconds) => {
       setTotal(seconds)
       if (usePlayerStore.getState().playing) instance.play().catch(() => usePlayerStore.getState().setPlaying(false))
     })
-    instance.on('timeupdate', setCurrent)
-    instance.on('play', () => setPlaying(true))
-    instance.on('pause', () => setPlaying(false))
+    instance.on('timeupdate', (seconds) => {
+      setCurrent(seconds)
+      const now = performance.now()
+      const state = usePlayerStore.getState()
+      const listened = measuredListeningDelta(previousMediaSeconds, seconds, previousWallMs, now)
+      if (
+        listened > 0 && state.playing && !state.preparing
+        && state.track?.id === track.id && track.videoId && track.discoverySuggestion
+      ) {
+        useDigitalCrateStore.getState().recordListening(track.videoId, listened)
+      }
+      previousMediaSeconds = seconds
+      previousWallMs = now
+    })
+    instance.on('play', () => {
+      resetListeningClock()
+      setPlaying(true)
+    })
+    instance.on('pause', () => {
+      resetListeningClock()
+      setPlaying(false)
+    })
+    instance.on('seeking', resetListeningClock)
     instance.on('finish', () => {
       const state = usePlayerStore.getState()
+      // A quick preview can reach its end on the same tick the user requests
+      // the full track. Never let that stale finish event advance the reel.
+      if (state.preparing) {
+        state.setPlaying(false)
+        return
+      }
       if (state.repeat) {
         instance.setTime(0)
         instance.play()
@@ -122,19 +167,26 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
         audioContext = new AudioContextClass()
         const source = audioContext.createMediaElementSource(media)
         const analyser = audioContext.createAnalyser()
-        analyser.fftSize = 128
-        analyser.smoothingTimeConstant = 0.84
+        analyser.fftSize = 256
+        analyser.smoothingTimeConstant = 0.86
         source.connect(analyser)
         analyser.connect(audioContext.destination)
         const bins = new Uint8Array(analyser.frequencyBinCount)
         const paint = (now: number) => {
           frame = window.requestAnimationFrame(paint)
-          if (now - lastPaint < 55 || !usePlayerStore.getState().playing) return
+          if (now - lastPaint < 50 || !usePlayerStore.getState().playing) return
           lastPaint = now
           analyser.getByteFrequencyData(bins)
-          const values = Array.from({ length: 32 }, (_, index) => {
-            const sourceIndex = Math.min(bins.length - 1, Math.floor(index * bins.length / 32))
-            return Math.max(0.08, bins[sourceIndex] / 255)
+          const bandCount = 48
+          const values = Array.from({ length: bandCount }, (_, index) => {
+            // Give the musically important low/mid frequencies more room than
+            // a linear FFT mapping, then average each band to avoid jitter.
+            const start = Math.floor(Math.pow(index / bandCount, 1.65) * bins.length)
+            const end = Math.max(start + 1, Math.floor(Math.pow((index + 1) / bandCount, 1.65) * bins.length))
+            let energy = 0
+            for (let bin = start; bin < Math.min(end, bins.length); bin += 1) energy += bins[bin]
+            const average = energy / Math.max(1, Math.min(end, bins.length) - start)
+            return Math.max(0.08, Math.pow(average / 255, 0.78))
           })
           usePlayerStore.getState().setSpectrum(values)
         }
@@ -153,7 +205,13 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
 
   useEffect(() => { wave.current?.setVolume(muted ? 0 : volume) }, [volume, muted])
   useEffect(() => {
-    if (!wave.current || preparing) return
+    if (!wave.current) return
+    // Loading a full replacement must pause the existing quick preview. The
+    // previous early-return left it running underneath the download.
+    if (preparing) {
+      if (wave.current.isPlaying()) wave.current.pause()
+      return
+    }
     if (playing && !wave.current.isPlaying()) wave.current.play().catch(() => setPlaying(false))
     if (!playing && wave.current.isPlaying()) wave.current.pause()
   }, [playing, preparing, setPlaying])
@@ -166,7 +224,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
           {track?.artworkUrl && !artworkFailed ? <img src={track.artworkUrl} alt="" onError={() => setArtworkFailed(true)} /> : <span>{track ? track.artist.slice(0, 1) : 'CD'}</span>}
           <i />
         </div>
-        <div><strong>{track?.title || 'Nothing playing'}</strong><span>{preparing ? 'Preparing audio…' : track?.artist || 'Dig something worth keeping'}</span></div>
+        <div><strong>{track?.title || 'Nothing playing'}</strong><span>{preparing ? 'Preparing audio…' : track ? `${track.artist}${track.discoverySuggestion && currentIndex >= 0 ? ` · ${currentIndex + 1} of ${playlist.length}` : ''}` : 'Dig something worth keeping'}</span></div>
       </div>
       <div className="transport">
         <div className="transport__buttons">
@@ -181,7 +239,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
         <div className="transport__wave"><span>{duration(current)}</span><div ref={container} /><span>{duration(total)}</span></div>
       </div>
       <div className="player-actions">
-        {track?.videoId && track.partial !== false && <button className="player-full" disabled={preparing} onClick={requestFull}>Full track</button>}
+        {track?.videoId && track.partial !== false && <button className="player-full" disabled={preparing} onClick={requestFull}>{preparing && requestedMode === 'full' ? 'Loading full…' : 'Full track'}</button>}
         <button aria-label="Open ingestion queue" onClick={onQueue}><ListMusic size={17} /></button>
         <button aria-label={muted ? 'Unmute' : 'Mute'} onClick={() => setMuted(!muted)}>{muted || volume === 0 ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
         <Slider.Root className="volume" value={[volume]} max={1} step={0.01} onValueChange={([value]) => setVolume(value)}>

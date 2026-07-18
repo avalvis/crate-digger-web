@@ -25,6 +25,6 @@ export async function openExternal(url: string) {
 
 export async function openFolder(path: string) {
   if (!window.__TAURI_INTERNALS__) throw new Error('Opening folders is available in the desktop app.')
-  const { openPath } = await import('@tauri-apps/plugin-opener')
-  await openPath(path)
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('open_directory', { path })
 }

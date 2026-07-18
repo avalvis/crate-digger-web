@@ -20,6 +20,8 @@ interface DigitalCrateState {
   lockedSources: Record<number, string>
   rematching: Record<number, boolean>
   mpcJobs: Record<string, MpcJob>
+  playedVideoIds: string[]
+  listenedSeconds: Record<string, number>
   setProfile: (value: ProducerProfile) => void
   setEra: (value: number) => void
   setCountry: (value: string) => void
@@ -28,6 +30,7 @@ interface DigitalCrateState {
   requestDig: () => void
   applyReel: (run: number, response: DiscoveryResponse) => void
   replaceSource: (masterId: number, suggestion: Suggestion) => void
+  recordListening: (videoId: string, seconds: number) => void
   rejectSource: (masterId: number, videoId: string) => void
   setRematching: (masterId: number, active: boolean) => void
   lockSource: (masterId: number, videoId: string) => void
@@ -53,6 +56,8 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
   lockedSources: {},
   rematching: {},
   mpcJobs: {},
+  playedVideoIds: [],
+  listenedSeconds: {},
   setProfile: (profile) => set({ profile }),
   setEra: (era) => set({ era }),
   setCountry: (country) => set({ country }),
@@ -68,14 +73,30 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
     rejectedSources: {},
     lockedSources: {},
     rematching: {},
+    playedVideoIds: [],
+    listenedSeconds: {},
   }),
   replaceSource: (masterId, suggestion) => set((state) => {
     const previous = state.items.find((item) => item.discogs_master_id === masterId)
     const previewStates = { ...state.previewStates }
+    const listenedSeconds = { ...state.listenedSeconds }
     if (previous?.youtube_video_id) delete previewStates[previous.youtube_video_id]
+    if (previous?.youtube_video_id) delete listenedSeconds[previous.youtube_video_id]
     return {
       items: state.items.map((item) => item.discogs_master_id === masterId ? suggestion : item),
       previewStates,
+      listenedSeconds,
+      playedVideoIds: state.playedVideoIds.filter((videoId) => videoId !== previous?.youtube_video_id),
+    }
+  }),
+  recordListening: (videoId, seconds) => set((state) => {
+    if (!videoId || !Number.isFinite(seconds) || seconds <= 0 || seconds > 2) return state
+    if (!state.items.some((item) => item.youtube_video_id === videoId)) return state
+    if (state.playedVideoIds.includes(videoId)) return state
+    const total = Math.min(10, (state.listenedSeconds[videoId] || 0) + seconds)
+    return {
+      listenedSeconds: { ...state.listenedSeconds, [videoId]: total },
+      playedVideoIds: total >= 10 ? [...state.playedVideoIds, videoId] : state.playedVideoIds,
     }
   }),
   rejectSource: (masterId, videoId) => set((state) => ({

@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
@@ -17,6 +19,28 @@ struct RuntimeState(Mutex<ApiConfig>);
 #[tauri::command]
 fn api_config(state: State<'_, RuntimeState>) -> ApiConfig {
     state.0.lock().expect("runtime state poisoned").clone()
+}
+
+fn validated_directory(path: &str) -> Result<PathBuf, String> {
+    let candidate = PathBuf::from(path);
+    if path.trim().is_empty() || !candidate.is_absolute() {
+        return Err("The folder path must be absolute.".into());
+    }
+    let directory = candidate
+        .canonicalize()
+        .map_err(|_| format!("Folder does not exist or is unavailable: {path}"))?;
+    if !directory.is_dir() {
+        return Err(format!("The selected path is not a folder: {path}"));
+    }
+    Ok(directory)
+}
+
+#[tauri::command]
+fn open_directory(app: AppHandle, path: String) -> Result<(), String> {
+    let directory = validated_directory(&path)?;
+    app.opener()
+        .open_path(directory.to_string_lossy(), None::<&str>)
+        .map_err(|error| format!("Could not open folder: {error}"))
 }
 
 fn available_port() -> u16 {
@@ -48,7 +72,10 @@ pub fn run() {
                 .sidecar("crate-digger-api")?
                 .env("CRATEDIGGER_PORT", port.to_string())
                 .env("CRATEDIGGER_TOKEN", token.clone())
-                .env("CRATEDIGGER_DATA_DIR", data_dir.to_string_lossy().to_string())
+                .env(
+                    "CRATEDIGGER_DATA_DIR",
+                    data_dir.to_string_lossy().to_string(),
+                )
                 .env("CRATEDIGGER_PARENT_PID", std::process::id().to_string());
             let (mut events, child) = command.spawn()?;
             tauri::async_runtime::spawn(async move {
@@ -76,7 +103,7 @@ pub fn run() {
             app.manage(Mutex::new(Some(child)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![api_config])
+        .invoke_handler(tauri::generate_handler![api_config, open_directory])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(child) = window
@@ -90,4 +117,26 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Crate Digger");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_directory;
+
+    #[test]
+    fn accepts_existing_absolute_directories_only() {
+        let temporary = std::env::temp_dir();
+        assert_eq!(
+            validated_directory(&temporary.to_string_lossy()).unwrap(),
+            temporary.canonicalize().unwrap()
+        );
+
+        let executable = std::env::current_exe().unwrap();
+        assert!(validated_directory(&executable.to_string_lossy())
+            .unwrap_err()
+            .contains("not a folder"));
+        assert!(validated_directory("relative/folder")
+            .unwrap_err()
+            .contains("absolute"));
+    }
 }
