@@ -19,6 +19,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
   const hydratedVolume = useRef(false)
   const [current, setCurrent] = useState(0)
   const [total, setTotal] = useState(0)
+  const [artworkFailed, setArtworkFailed] = useState(false)
   const {
     track, playlist, currentIndex, playing, preparing, requestedMode, requestToken,
     volume, muted, shuffle, repeat, setPlaying, setVolume, setMuted,
@@ -27,6 +28,8 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
   } = usePlayerStore()
   const toast = useToastStore((state) => state.show)
   const config = useQuery({ queryKey: ['config'], queryFn: api.config })
+
+  useEffect(() => setArtworkFailed(false), [track?.id, track?.artworkUrl])
 
   useEffect(() => {
     if (hydratedVolume.current || !config.data) return
@@ -120,17 +123,17 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
         const source = audioContext.createMediaElementSource(media)
         const analyser = audioContext.createAnalyser()
         analyser.fftSize = 128
-        analyser.smoothingTimeConstant = 0.76
+        analyser.smoothingTimeConstant = 0.84
         source.connect(analyser)
         analyser.connect(audioContext.destination)
         const bins = new Uint8Array(analyser.frequencyBinCount)
         const paint = (now: number) => {
           frame = window.requestAnimationFrame(paint)
-          if (now - lastPaint < 45 || !usePlayerStore.getState().playing) return
+          if (now - lastPaint < 55 || !usePlayerStore.getState().playing) return
           lastPaint = now
           analyser.getByteFrequencyData(bins)
-          const values = Array.from({ length: 48 }, (_, index) => {
-            const sourceIndex = Math.min(bins.length - 1, Math.floor(index * bins.length / 48))
+          const values = Array.from({ length: 32 }, (_, index) => {
+            const sourceIndex = Math.min(bins.length - 1, Math.floor(index * bins.length / 32))
             return Math.max(0.08, bins[sourceIndex] / 255)
           })
           usePlayerStore.getState().setSpectrum(values)
@@ -160,7 +163,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
     <footer className={`player-bar ${track ? 'player-bar--loaded' : ''}`}>
       <div className="player-track">
         <div className={`player-track__art vinyl-art ${playing ? 'is-playing' : ''}`}>
-          {track?.artworkUrl ? <img src={track.artworkUrl} alt="" /> : <span>{track ? track.artist.slice(0, 1) : 'CD'}</span>}
+          {track?.artworkUrl && !artworkFailed ? <img src={track.artworkUrl} alt="" onError={() => setArtworkFailed(true)} /> : <span>{track ? track.artist.slice(0, 1) : 'CD'}</span>}
           <i />
         </div>
         <div><strong>{track?.title || 'Nothing playing'}</strong><span>{preparing ? 'Preparing audio…' : track?.artist || 'Dig something worth keeping'}</span></div>

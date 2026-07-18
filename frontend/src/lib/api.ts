@@ -96,6 +96,7 @@ export const api = {
   setSecret: (name: 'discogs' | 'deepseek', value: string) =>
     request<ConfigResponse>(`/api/config/secrets/${name}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   tracks: (query = '') => request<TrackPage>(`/api/tracks?limit=250&query=${encodeURIComponent(query)}`),
+  track: (id: number) => request<Track>(`/api/tracks/${id}`),
   patchTrack: (id: number, values: Partial<Pick<Track, 'rating' | 'notes' | 'tags'>>) =>
     request<Track>(`/api/tracks/${id}`, { method: 'PATCH', body: JSON.stringify(values) }),
   jobs: (values: { view?: 'queue' | 'history' | 'all'; query?: string; status?: string; limit?: number; offset?: number } = {}) => {

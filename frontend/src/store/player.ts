@@ -71,7 +71,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   muted: false,
   shuffle: false,
   repeat: false,
-  spectrum: Array.from({ length: 48 }, () => 0.08),
+  spectrum: Array.from({ length: 32 }, () => 0.08),
   setTrack: (track) => set((state) => ({
     track,
     playlist: [track],

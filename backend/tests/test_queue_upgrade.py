@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from core.database import QueueJobRecord, TrackRecord, VaultDatabase
 from core.pipeline import PipelineProgress, PipelineRequest, PipelineStage
 from core.queue_manager import QueueManager
 from core.stems import StemModel, StemSeparator
+from sidecar_entry import _configure_utf8_stdio
 from cratedigger_api.app import create_app
 from cratedigger_api.runtime import default_data_dir
 from utils.config import GeneralConfig
@@ -236,3 +238,26 @@ def test_frozen_separator_dispatches_internal_worker_instead_of_python_c(monkeyp
     separator.separate(audio, tmp_path / "stems")
     assert captured["command"][1] == "--internal-demucs"
     assert "-c" not in captured["command"]
+
+
+def test_frozen_worker_reconfigures_live_streams_for_unicode_paths(monkeypatch) -> None:
+    class Stream:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def reconfigure(self, **values: str) -> None:
+            self.calls.append(values)
+
+    stdout = Stream()
+    stderr = Stream()
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    _configure_utf8_stdio()
+
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert os.environ["PYTHONUTF8"] == "1"
+    assert os.environ["PYTHONIOENCODING"] == "utf-8"

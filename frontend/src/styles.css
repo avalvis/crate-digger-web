@@ -102,8 +102,9 @@ select { height: 35px; min-width: 145px; color: #e9e9e4; background: #161714; bo
 .featured-dig__copy > span { font-size: 8px; letter-spacing: 1.5px; font-weight: 900; background: #0b0c0a; color: var(--yellow); padding: 5px 7px; }
 .featured-dig__copy h2 { max-width: 630px; margin: 11px 0 4px; padding: 4px 8px 6px; background: #0b0c0a; color: #fff; font-size: clamp(19px, 2.2vw, 31px); line-height: 1.15; letter-spacing: -.7px; }
 .featured-dig__copy strong { background: #181916; color: #c5c6c0; padding: 4px 8px; font-size: 12px; }
-.hero-wave { width: 100%; height: 64px; margin-top: auto; display: flex; align-items: end; gap: 2px; overflow: hidden; }
-.hero-wave i { flex: 1 1 2px; min-width: 2px; height: 100%; transform-origin: bottom; background: #f5f5f2; box-shadow: 0 0 0 1px #aaa; transition: transform 45ms linear; }
+.hero-wave { width: min(100%, 560px); height: 46px; margin-top: auto; padding: 6px 9px; display: flex; align-items: end; justify-content: center; gap: 4px; overflow: hidden; border: 1px solid #ffffff32; border-radius: 8px; background: linear-gradient(115deg, #11130eea, #282b1fe8 55%, #171811e8); box-shadow: inset 0 1px #ffffff12, 0 8px 20px #25270f26; }
+.hero-wave i { flex: 1 1 4px; max-width: 8px; min-width: 3px; height: 100%; transform-origin: bottom; border-radius: 4px 4px 1px 1px; opacity: .82; background: linear-gradient(to top, #77710a, var(--yellow) 58%, #fff8a6); box-shadow: 0 0 8px #f4df0045; transition: transform 125ms cubic-bezier(.22,.8,.25,1), opacity 160ms ease, filter 160ms ease; }
+.featured-dig.is-playing .hero-wave i { opacity: 1; filter: saturate(1.18) brightness(1.06); }
 .record-art { position: relative; overflow: hidden; display: grid; place-items: center; aspect-ratio: 1; color: #efefe9; isolation: isolate; background: #222; }
 .record-art::before, .record-art::after { content: ""; position: absolute; z-index: -1; }
 .record-art::before { inset: -20%; background: repeating-radial-gradient(circle at center, #191a18 0 5px, #2a2b27 6px 7px); transform: rotate(-11deg); }

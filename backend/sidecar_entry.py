@@ -12,6 +12,29 @@ import sys
 import threading
 
 
+def _configure_utf8_stdio() -> None:
+    """Make frozen worker output safe for every Windows filename.
+
+    ``PYTHONIOENCODING`` is read when Python starts, but PyInstaller's child
+    process can create its standard streams before that environment setting is
+    honored.  Reconfiguring the live streams prevents Demucs/tqdm from trying
+    to encode Greek, CJK, or other Unicode paths with Windows CP1252.
+    """
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # A detached Windows process may not have a writable stdio stream.
+            # The API can still run normally in that case.
+            pass
+
+
 def _exit_when_desktop_parent_closes() -> None:
     """Prevent PyInstaller's inner process from surviving the Tauri shell."""
     raw_pid = os.environ.get("CRATEDIGGER_PARENT_PID", "").strip()
@@ -104,6 +127,7 @@ def _run_internal_worker() -> bool:
 
 
 def main() -> None:
+    _configure_utf8_stdio()
     _exit_when_desktop_parent_closes()
     if _run_internal_worker():
         return

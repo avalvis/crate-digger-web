@@ -237,7 +237,7 @@ export function DigitalCrate() {
     onMpc: openMpc,
     onCancelMpc: (job) => cancelMpc.mutate(job),
   })
-  const bars = activePlaying ? player.spectrum : Array.from({ length: 48 }, (_, index) => 0.14 + ((index * 19) % 70) / 100)
+  const bars = activePlaying ? player.spectrum : Array.from({ length: 32 }, (_, index) => 0.16 + ((index * 17) % 48) / 100)
 
   return <div className="page digital-crate">
     <section className="crate-toolbar"><div className="filter-cluster">
