@@ -3,8 +3,25 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local smoke tests, scratch data, and runtime caches
+.tmp/
+tmp/
+temp/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.part
+*.partial
+
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 frontend/playwright-report/
 frontend/test-results/
 src-tauri/target/
@@ -14,4 +31,11 @@ dist/
 build/
 *.spec
 .env
+.env.*
+!.env.example
 
+# Editor and operating-system noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

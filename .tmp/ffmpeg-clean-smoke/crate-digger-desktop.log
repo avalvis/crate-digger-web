@@ -1,8 +1,0 @@
-2026-07-18 18:40:56,542 INFO     cratedigger.web.config             No config at C:\Projects\crate-digger-web\.tmp\ffmpeg-clean-smoke\config.json — starting with defaults.
-2026-07-18 18:40:56,559 INFO     cratedigger.web.db                 Initialized vault.db schema v2
-2026-07-18 18:42:10,356 INFO     cratedigger.web.config             No config at C:\Projects\crate-digger-web\.tmp\ffmpeg-clean-smoke\config.json — starting with defaults.
-2026-07-18 18:42:11,831 INFO     cratedigger.web.ffmpeg             Prepared private ffmpeg executable: C:\Projects\crate-digger-web\.tmp\ffmpeg-clean-smoke\tools\ffmpeg.exe
-2026-07-18 18:42:12,914 INFO     cratedigger.web.ffmpeg             Using bundled ffmpeg: C:\Projects\crate-digger-web\.tmp\ffmpeg-clean-smoke\tools\ffmpeg.exe
-2026-07-18 18:42:12,925 DEBUG    cratedigger.web.queue              cratedigger-worker-1 started
-2026-07-18 18:42:12,925 DEBUG    cratedigger.web.queue              cratedigger-worker-2 started
-2026-07-18 18:42:12,926 INFO     cratedigger.web.queue              QueueManager started with 2 worker(s)
