@@ -1,6 +1,6 @@
 [package]
 name = "crate-digger"
-version = "0.2.2"
+version = "0.2.3"
 description = "Crate Digger desktop shell"
 authors = ["Crate Digger"]
 edition = "2021"

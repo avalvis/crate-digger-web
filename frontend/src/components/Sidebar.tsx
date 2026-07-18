@@ -45,7 +45,7 @@ export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue }: { jobs: Queu
           {(summary.running > 0 || summary.waiting > 0) && <div className="queue-dock__counts">{summary.running} running · {summary.waiting} waiting</div>}
         </div>
       </button>
-      <div className="sidebar__version">v0.2.2 WEB</div>
+      <div className="sidebar__version">v0.2.3 WEB</div>
     </aside>
   )
 }
