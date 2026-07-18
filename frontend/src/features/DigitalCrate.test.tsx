@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { api } from '../lib/api'
 import type { ConfigResponse } from '../lib/types'
 import { DigitalCrate } from './DigitalCrate'
@@ -16,6 +17,10 @@ vi.mock('../lib/api', () => ({
     enqueue: vi.fn(),
     preview: vi.fn(),
     prefetchPreviews: vi.fn(),
+    rematch: vi.fn(),
+    recordDiscoveryInteraction: vi.fn(),
+    enqueueMpc: vi.fn(),
+    cancelMpc: vi.fn(),
   },
   mediaUrl: vi.fn(),
 }))
@@ -43,7 +48,10 @@ function renderCrate() {
 describe('DigitalCrate startup', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useDigitalCrateStore.setState({ items: [], message: null, demo: false, digRun: 0, appliedRun: 0, previewStates: {} })
+    useDigitalCrateStore.setState({
+      items: [], message: null, demo: false, digRun: 0, appliedRun: 0, previewStates: {},
+      rejectedSources: {}, lockedSources: {}, rematching: {}, mpcJobs: {},
+    })
     usePlayerStore.getState().clear()
     vi.mocked(api.prefetchPreviews).mockResolvedValue({ items: [] })
   })
@@ -53,19 +61,22 @@ describe('DigitalCrate startup', () => {
 
     renderCrate()
 
-    expect(await screen.findByText('Connect Discogs to dig live gems')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add Discogs token' })).toBeInTheDocument()
+    expect(await screen.findByText('Your crate is empty')).toBeInTheDocument()
+    expect(screen.getByAltText('A crate filled with records')).toBeInTheDocument()
+    expect((await screen.findAllByRole('button', { name: 'Add Discogs token' })).length).toBeGreaterThan(0)
     expect(api.dig).not.toHaveBeenCalled()
   })
 
-  it('starts exactly one durable dig under React Strict Mode', async () => {
+  it('waits for a manual Dig and starts exactly one request under React Strict Mode', async () => {
     vi.mocked(api.config).mockResolvedValue(config(true))
     vi.mocked(api.dig).mockResolvedValue({ items: [], demo: false, message: null })
 
     renderCrate()
 
+    await screen.findByText('Your crate is empty')
+    expect(api.dig).not.toHaveBeenCalled()
+    await userEvent.click(screen.getAllByRole('button', { name: 'Dig for gems' })[0])
     await waitFor(() => expect(api.dig).toHaveBeenCalledTimes(1))
-    await screen.findByText('Waiting for the next pull')
     expect(api.dig).toHaveBeenCalledWith(expect.objectContaining({
       profile: 'boom_bap',
       prioritize_samples: true,

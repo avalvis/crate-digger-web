@@ -218,3 +218,87 @@ def test_preview_prefetch_and_full_mode_contracts(monkeypatch, tmp_path: Path) -
         assert full.status_code == 200
         assert full.json()["partial"] is False
     assert calls == [("prefetch", ["a", "b"]), ("preview", ("a", "full"))]
+
+
+def _suggestion_payload(video_id: str = "gem42") -> dict[str, object]:
+    return {
+        "discogs_master_id": 42,
+        "discogs_release_id": 99,
+        "artist": "Dorothy Ashby",
+        "title": "Afro-Harping",
+        "year": 1968,
+        "country": "US",
+        "genre": "Jazz",
+        "style": "Soul-Jazz",
+        "youtube_url": f"https://youtube.com/watch?v={video_id}",
+        "youtube_video_id": video_id,
+        "youtube_title": "Afro-Harping",
+        "youtube_duration_seconds": 180,
+        "match_score": 0.95,
+        "sample_score": 0.98,
+        "sample_reasons": ["classic source era"],
+        "artwork_url": None,
+        "discogs_url": "https://www.discogs.com/master/42",
+        "sample_friendly": True,
+        "demo": False,
+    }
+
+
+def test_discovery_interaction_is_idempotent_and_upgrades_queue_state(tmp_path: Path) -> None:
+    payload = _suggestion_payload()
+    with client_for(tmp_path) as client:
+        for action in ("preview", "preview", "queue"):
+            response = client.post(
+                "/api/discovery/interactions",
+                headers=HEADERS,
+                json={"suggestion": payload, "action": action},
+            )
+            assert response.status_code == 204
+
+        db = VaultDatabase(tmp_path / "data" / "vault.db")
+        records = db.list_recent_discoveries()
+        db.close()
+
+    assert len(records) == 1
+    assert records[0].discogs_master_id == 42
+    assert records[0].was_queued is True
+
+
+def test_rematch_and_mpc_api_contracts(monkeypatch, tmp_path: Path) -> None:
+    payload = _suggestion_payload()
+    replacement = {**payload, "youtube_video_id": "better43", "youtube_url": "https://youtube.com/watch?v=better43"}
+    mpc_job = {
+        "job_id": "mpc123",
+        "video_id": "gem42",
+        "display_name": "Dorothy Ashby — Afro-Harping",
+        "mode": "both",
+        "state": "queued",
+        "message": "Queued",
+        "percent": 0,
+        "error_message": None,
+        "track_dir": None,
+    }
+    monkeypatch.setattr(EngineRuntime, "rematch_discovery", lambda *_: replacement)
+    monkeypatch.setattr(EngineRuntime, "list_mpc_jobs", lambda *_: [mpc_job])
+    monkeypatch.setattr(EngineRuntime, "enqueue_mpc", lambda *_: mpc_job)
+    monkeypatch.setattr(EngineRuntime, "cancel_mpc_job", lambda *_: True)
+    monkeypatch.setattr(EngineRuntime, "clear_finished_mpc_jobs", lambda *_: 2)
+
+    with client_for(tmp_path) as client:
+        rematched = client.post(
+            "/api/discovery/rematch", headers=HEADERS,
+            json={"suggestion": payload, "exclude_video_ids": ["gem42"]},
+        )
+        assert rematched.status_code == 200
+        assert rematched.json()["youtube_video_id"] == "better43"
+
+        assert client.get("/api/mpc/jobs", headers=HEADERS).json() == [mpc_job]
+        created = client.post(
+            "/api/mpc/jobs", headers=HEADERS,
+            json={"suggestion": payload, "mode": "both"},
+        )
+        assert created.status_code == 202
+        assert created.json()["job_id"] == "mpc123"
+        assert client.delete("/api/mpc/jobs/mpc123", headers=HEADERS).status_code == 204
+        cleared = client.post("/api/mpc/jobs/clear-finished", headers=HEADERS)
+        assert cleared.json() == {"affected": 2}

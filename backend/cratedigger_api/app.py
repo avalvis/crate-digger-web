@@ -22,10 +22,14 @@ from .models import (
     CrateCreate,
     CrateTracks,
     DiscoveryFilters,
+    DiscoveryInteractionRequest,
+    DiscoveryRematchRequest,
     DiscoveryResponse,
     ExportRequest,
     ExportResponse,
     HealthResponse,
+    MpcExportRequest,
+    MpcJob,
     PreviewResponse,
     PreviewPrefetchRequest,
     PreviewPrefetchResponse,
@@ -363,6 +367,66 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             logging.getLogger("cratedigger.web").exception("Dig failed")
             raise _error("dig_failed", str(exc), 502) from exc
         return DiscoveryResponse(items=[Suggestion(**item) for item in items], demo=demo, message=message)
+
+    @app.post("/api/discovery/rematch", response_model=Suggestion)
+    async def rematch_discovery(payload: DiscoveryRematchRequest, _: Guard, core: Runtime) -> Suggestion:
+        try:
+            item = await run_in_threadpool(
+                core.rematch_discovery,
+                payload.suggestion.model_dump(mode="python"),
+                payload.exclude_video_ids,
+            )
+        except RuntimeUnavailable as exc:
+            raise _error("discovery_unavailable", str(exc), 503) from exc
+        except Exception as exc:
+            from core.discovery import NoYouTubeMatchError
+
+            if isinstance(exc, NoYouTubeMatchError):
+                raise _error("no_alternative_source", "No other credible YouTube source was found", 404) from exc
+            raise _error("rematch_failed", str(exc), 502) from exc
+        return Suggestion(**item)
+
+    @app.post("/api/discovery/interactions", status_code=204)
+    async def record_discovery_interaction(
+        payload: DiscoveryInteractionRequest, _: Guard, core: Runtime,
+    ) -> None:
+        try:
+            await run_in_threadpool(
+                core.record_discovery_interaction,
+                payload.suggestion.model_dump(mode="python"),
+                payload.action,
+            )
+        except ValueError as exc:
+            raise _error("invalid_suggestion", str(exc), 422) from exc
+
+    @app.get("/api/mpc/jobs", response_model=list[MpcJob])
+    async def list_mpc_jobs(_: Guard, core: Runtime) -> list[MpcJob]:
+        try:
+            jobs = await run_in_threadpool(core.list_mpc_jobs)
+        except RuntimeUnavailable as exc:
+            raise _error("mpc_unavailable", str(exc), 503) from exc
+        return [MpcJob(**job) for job in jobs]
+
+    @app.post("/api/mpc/jobs", response_model=MpcJob, status_code=202)
+    async def create_mpc_job(payload: MpcExportRequest, _: Guard, core: Runtime) -> MpcJob:
+        try:
+            job = await run_in_threadpool(
+                core.enqueue_mpc,
+                payload.suggestion.model_dump(mode="python"),
+                payload.mode,
+            )
+        except (RuntimeUnavailable, ValueError) as exc:
+            raise _error("mpc_unavailable", str(exc), 409) from exc
+        return MpcJob(**job)
+
+    @app.delete("/api/mpc/jobs/{job_id}", status_code=204)
+    async def cancel_mpc_job(job_id: str, _: Guard, core: Runtime) -> None:
+        if not await run_in_threadpool(core.cancel_mpc_job, job_id):
+            raise _error("mpc_job_not_active", "MPC job is not active", 409)
+
+    @app.post("/api/mpc/jobs/clear-finished", response_model=QueueActionResponse)
+    async def clear_finished_mpc_jobs(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=await run_in_threadpool(core.clear_finished_mpc_jobs))
 
     @app.post("/api/previews/prefetch", response_model=PreviewPrefetchResponse, status_code=202)
     async def prefetch_previews(payload: PreviewPrefetchRequest, _: Guard, core: Runtime) -> PreviewPrefetchResponse:

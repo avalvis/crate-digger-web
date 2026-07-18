@@ -516,6 +516,11 @@ class DiscoveryEngine:
             )
 
         pool = self._rank_and_shuffle(candidates, filters)
+        if not pool:
+            raise NoResultsError(
+                "Every matching record has already been auditioned. "
+                "Widen the filters to keep digging fresh material."
+            )
         pool = self._diversify_candidate_pool(pool, filters, count=count)
         self._emit_progress(
             progress,
@@ -525,7 +530,15 @@ class DiscoveryEngine:
         # Walk the ranked pool, resolving YT matches until we fill the
         # reel or exhaust a generous attempt budget.
         suggestions: list[DiscoverySuggestion] = []
+        deferred_suggestions: list[DiscoverySuggestion] = []
+        seen_master_ids: set[int] = set()
         seen_video_ids: set[str] = set()
+        artist_counts: dict[str, int] = {}
+        country_counts: dict[str, int] = {}
+        lane_counts: dict[str, int] = {}
+        use_portfolio_caps = self._uses_profile_portfolio(filters)
+        country_cap = max(2, math.ceil(count * 0.25))
+        lane_cap = max(2, math.ceil(count * 0.25))
         last_error: Optional[Exception] = None
         max_attempts = min(
             len(pool),
@@ -550,15 +563,43 @@ class DiscoveryEngine:
                 continue
             # De-dupe within a single reel (different masters can resolve
             # to the same upload).
-            if suggestion.youtube_video_id in seen_video_ids:
+            if (
+                suggestion.discogs_master_id in seen_master_ids
+                or suggestion.youtube_video_id in seen_video_ids
+            ):
                 continue
+            seen_master_ids.add(suggestion.discogs_master_id)
             seen_video_ids.add(suggestion.youtube_video_id)
+
+            artist = _norm_label(_extract_primary_artist(suggestion.artist)) or "unknown"
+            country = _norm_country(suggestion.country) or "unknown"
+            lane = self._producer_lane(cand)
+            repeats_artist = artist != "unknown" and artist_counts.get(artist, 0) >= 1
+            repeats_country = (
+                use_portfolio_caps
+                and not filters.country
+                and country_counts.get(country, 0) >= country_cap
+            )
+            repeats_lane = use_portfolio_caps and lane_counts.get(lane, 0) >= lane_cap
+            if repeats_artist or repeats_country or repeats_lane:
+                deferred_suggestions.append(suggestion)
+                continue
+
             suggestions.append(suggestion)
+            artist_counts[artist] = artist_counts.get(artist, 0) + 1
+            country_counts[country] = country_counts.get(country, 0) + 1
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
             self._log.info(
                 "Reel match %d/%d: %s — %s (YT %.2f, affinity %.2f)",
                 len(suggestions), count, cand.artist, cand.title,
                 suggestion.match_score, cand.sample_affinity,
             )
+
+        # Diversity is a preference, never a reason to return a short reel.
+        # Credible matches deferred by the caps are restored in ranked order
+        # if the candidate budget cannot otherwise fill the requested count.
+        if len(suggestions) < count:
+            suggestions.extend(deferred_suggestions[:count - len(suggestions)])
 
         if not suggestions:
             raise NoYouTubeMatchError(
@@ -627,6 +668,10 @@ class DiscoveryEngine:
                 style=suggestion.style,
                 was_queued=was_queued,
             ))
+            if was_queued:
+                # record_discovery is intentionally idempotent. If a preview
+                # created the row first, upgrade it when the user later acts.
+                self._db.mark_discovery_queued(suggestion.discogs_master_id)
         except Exception:
             self._log.exception(
                 "Could not record discovery for master %s",
@@ -710,10 +755,10 @@ class DiscoveryEngine:
                 )
         if not fresh:
             self._log.info(
-                "All %d candidates already suggested; reusing pool.",
+                "All %d candidates were previously auditioned; returning no repeats.",
                 len(candidates),
             )
-            fresh = list(candidates)
+            return []
 
         prioritize = filters.prioritize_samples
         intensity = filters.sample_intensity

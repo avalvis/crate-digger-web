@@ -2,6 +2,9 @@ import type {
   ConfigResponse,
   Crate,
   DiscoveryResponse,
+  DiscoveryInteraction,
+  MpcExportMode,
+  MpcJob,
   PreviewResponse,
   PreviewPrefetchResponse,
   QueueEvent,
@@ -114,6 +117,21 @@ export const api = {
   deleteJobHistory: () => request<{ affected: number }>('/api/jobs/history', { method: 'DELETE' }),
   dig: (values: Record<string, unknown>) =>
     request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }, 180_000),
+  rematch: (suggestion: import('./types').Suggestion, excludeVideoIds: string[]) =>
+    request<import('./types').Suggestion>('/api/discovery/rematch', {
+      method: 'POST', body: JSON.stringify({ suggestion, exclude_video_ids: excludeVideoIds }),
+    }, 180_000),
+  recordDiscoveryInteraction: (suggestion: import('./types').Suggestion, action: DiscoveryInteraction) =>
+    request<void>('/api/discovery/interactions', {
+      method: 'POST', body: JSON.stringify({ suggestion, action }),
+    }),
+  mpcJobs: () => request<MpcJob[]>('/api/mpc/jobs'),
+  enqueueMpc: (suggestion: import('./types').Suggestion, mode: MpcExportMode) =>
+    request<MpcJob>('/api/mpc/jobs', {
+      method: 'POST', body: JSON.stringify({ suggestion, mode }),
+    }, 180_000),
+  cancelMpc: (jobId: string) => request<void>(`/api/mpc/jobs/${jobId}`, { method: 'DELETE' }),
+  clearFinishedMpc: () => request<{ affected: number }>('/api/mpc/jobs/clear-finished', { method: 'POST' }),
   preview: (videoId: string, mode: 'quick' | 'full' = 'quick') =>
     request<PreviewResponse>(`/api/previews/${videoId}?mode=${mode}`, { method: 'POST' }, mode === 'full' ? 300_000 : 120_000),
   prefetchPreviews: (videoIds: string[]) => request<PreviewPrefetchResponse>('/api/previews/prefetch', {

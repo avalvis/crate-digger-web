@@ -34,12 +34,16 @@ export default function App() {
           error_message: event.error_message || null,
         })
       }
-      if (event.job) {
+      const eventJob = event.job
+      if (event.type.startsWith('mpc_') && eventJob && 'job_id' in eventJob) {
+        useDigitalCrateStore.getState().updateMpcJob(eventJob)
+      }
+      if (eventJob && 'id' in eventJob) {
         queryClient.setQueryData<QueuePage>(['jobs', 'queue'], (page) => {
           if (!page) return page
-          const items = page.items.some((job) => job.id === event.job!.id)
-            ? page.items.map((job) => job.id === event.job!.id ? event.job! : job)
-            : [event.job!, ...page.items]
+          const items = page.items.some((job) => job.id === eventJob.id)
+            ? page.items.map((job) => job.id === eventJob.id ? eventJob : job)
+            : [eventJob, ...page.items]
           return { ...page, items: items.filter((job) => !job.archived_at) }
         })
       }
@@ -49,6 +53,7 @@ export default function App() {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
       const ids = useDigitalCrateStore.getState().items.map((item) => item.youtube_video_id).filter((value): value is string => !!value)
       if (ids.length) api.previewStatus(ids).then((result) => useDigitalCrateStore.getState().setPreviewItems(result.items)).catch(() => undefined)
+      api.mpcJobs().then((result) => useDigitalCrateStore.getState().setMpcJobs(result)).catch(() => undefined)
     }).then((value) => {
       if (disposed) value()
       else disconnect = value

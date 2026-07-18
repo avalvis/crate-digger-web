@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { DropdownMenu } from 'radix-ui'
-import { Disc3, Grid2X2, List, LoaderCircle, MoreVertical, Play, Plus, RefreshCw, SlidersHorizontal, Waves, WandSparkles } from 'lucide-react'
+import { Dialog, DropdownMenu } from 'radix-ui'
+import {
+  Copy, Cpu, Disc3, FolderOpen, Grid2X2, List, LoaderCircle, MoreVertical,
+  Play, Plus, RefreshCw, RotateCcw, SlidersHorizontal, Waves, WandSparkles, X,
+} from 'lucide-react'
+import crateArtwork from '../../../assets/crate.png'
 import { api } from '../lib/api'
-import { openExternal } from '../lib/desktop'
-import type { PreviewPrefetchItem, Suggestion } from '../lib/types'
+import { openExternal, openFolder } from '../lib/desktop'
+import type { MpcExportMode, MpcJob, PreviewPrefetchItem, Suggestion } from '../lib/types'
 import { useDigitalCrateStore } from '../store/digitalCrate'
 import { usePlayerStore } from '../store/player'
 import { useToastStore } from '../store/toast'
@@ -46,8 +50,62 @@ function previewLabel(state?: PreviewPrefetchItem, active?: boolean, preparing?:
   return 'Preview'
 }
 
-function SuggestionCard({ item, index, previewState, active, preparing, queueing, onPlay, onQueue }: {
+function mpcLabel(job?: MpcJob) {
+  if (!job) return 'MPC Workflow'
+  if (job.state === 'queued') return 'MPC queued'
+  if (job.state === 'running') return `MPC ${Math.round(job.percent)}%`
+  if (job.state === 'completed') return 'MPC export complete'
+  if (job.state === 'failed') return 'Retry MPC Workflow'
+  return 'MPC Workflow'
+}
+
+interface ActionMenuProps {
+  item: Suggestion
+  queueing: boolean
+  rematching: boolean
+  locked: boolean
+  mpcJob?: MpcJob
+  onQueue: (item: Suggestion, stems?: boolean) => void
+  onRematch: (item: Suggestion) => void
+  onMpc: (item: Suggestion) => void
+  onCancelMpc: (job: MpcJob) => void
+}
+
+function SongActionMenu({ item, queueing, rematching, locked, mpcJob, onQueue, onRematch, onMpc, onCancelMpc }: ActionMenuProps) {
+  const mpcActive = mpcJob?.state === 'queued' || mpcJob?.state === 'running'
+  return <DropdownMenu.Root><DropdownMenu.Trigger className="icon-button dig-card__more" aria-label={`More actions for ${item.artist} — ${item.title}`}><MoreVertical size={18} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" sideOffset={7}>
+    <DropdownMenu.Item disabled={!item.youtube_url || queueing} onSelect={() => onQueue(item, true)}><WandSparkles size={13} /> Queue + stems</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!item.youtube_video_id || rematching || locked} onSelect={() => onRematch(item)}><RefreshCw size={13} className={rematching ? 'spin' : ''} /> {rematching ? 'Searching…' : locked ? 'Audio source locked' : 'Find better audio'}</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!item.youtube_video_id || !!mpcActive} onSelect={() => onMpc(item)}><Cpu size={13} /> {mpcLabel(mpcJob)}</DropdownMenu.Item>
+    {mpcActive && <DropdownMenu.Item onSelect={() => onCancelMpc(mpcJob!)}><X size={13} /> Cancel MPC export</DropdownMenu.Item>}
+    {mpcJob?.state === 'completed' && mpcJob.track_dir && <DropdownMenu.Item onSelect={() => openFolder(mpcJob.track_dir!).catch(() => undefined)}><FolderOpen size={13} /> Open MPC folder</DropdownMenu.Item>}
+    <DropdownMenu.Separator className="menu-separator" />
+    <DropdownMenu.Item onSelect={() => navigator.clipboard.writeText(`${item.artist} — ${item.title}`)}><Copy size={13} /> Copy track name</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!item.youtube_url} onSelect={() => item.youtube_url && openExternal(item.youtube_url)}>Open YouTube</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!item.discogs_url} onSelect={() => item.discogs_url && openExternal(item.discogs_url)}>Open Discogs</DropdownMenu.Item>
+  </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
+}
+
+function MpcModeDialog({ item, mode, open, onMode, onOpenChange, onConfirm, busy, onSettings }: {
+  item: Suggestion | null; mode: MpcExportMode; open: boolean; busy: boolean
+  onMode: (mode: MpcExportMode) => void; onOpenChange: (open: boolean) => void
+  onConfirm: () => void; onSettings: () => void
+}) {
+  const options: Array<[MpcExportMode, string, string]> = [
+    ['song', 'Original song only', 'Full track converted to MPC-ready WAV.'],
+    ['stems', 'Stems only', 'First 120 seconds separated into four stems.'],
+    ['both', 'Both', 'Original song plus the 120-second stem set. Recommended.'],
+  ]
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="mpc-dialog">
+    <div className="panel-heading"><div><span className="eyebrow">DIRECT SAMPLE WORKFLOW</span><Dialog.Title>Export to MPC folder</Dialog.Title><Dialog.Description>{item ? `${item.artist} — ${item.title}` : 'Choose an export mode.'}</Dialog.Description></div><Dialog.Close className="icon-button" aria-label="Close"><X size={18} /></Dialog.Close></div>
+    <div className="mpc-mode-list">{options.map(([value, title, description]) => <label key={value} className={mode === value ? 'active' : ''}><input type="radio" name="mpc-mode" value={value} checked={mode === value} onChange={() => onMode(value)} /><span><strong>{title}</strong><small>{description}</small></span></label>)}</div>
+    <div className="mpc-dialog__footer"><button className="text-button" type="button" onClick={onSettings}>Destination settings</button><Dialog.Close className="button button--outline">Cancel</Dialog.Close><button className="button button--primary" disabled={busy || !item} onClick={onConfirm}>{busy ? <LoaderCircle size={14} className="spin" /> : <Cpu size={14} />} Queue export</button></div>
+  </Dialog.Content></Dialog.Portal></Dialog.Root>
+}
+
+function SuggestionCard({ item, index, previewState, active, preparing, queueing, actions, onPlay, onQueue }: {
   item: Suggestion; index: number; previewState?: PreviewPrefetchItem; active: boolean; preparing: boolean; queueing: boolean
+  actions: Omit<ActionMenuProps, 'item' | 'queueing'>
   onPlay: (item: Suggestion, mode?: 'quick' | 'full') => void; onQueue: (item: Suggestion, stems?: boolean) => void
 }) {
   const playable = !!item.youtube_video_id
@@ -58,16 +116,12 @@ function SuggestionCard({ item, index, previewState, active, preparing, queueing
       <div className="metadata"><span>{item.year || '—'}</span><b>•</b><span>{item.country || 'Unknown'}</span><b>•</b><span>{item.style || item.genre || 'Other'}</span>{typeof item.match_score === 'number' && <><b>•</b><span>match {Math.round(item.match_score * 100)}%</span></>}</div>
       <SampleReasons item={item} />
       <div className={`ready-label ready-label--${previewState?.state || 'pending'}`}>{previewState?.error_message || previewState?.message || (item.demo ? 'Demo reel' : 'Queued for preview')}</div>
+      {actions.mpcJob && <div className={`mpc-inline mpc-inline--${actions.mpcJob.state}`}>{actions.mpcJob.error_message || actions.mpcJob.message || mpcLabel(actions.mpcJob)}</div>}
       <div className="dig-card__actions">
         <button className="button button--outline" disabled={!playable || preparing} onClick={() => onPlay(item)}>{preparing && active ? <LoaderCircle size={14} className="spin" /> : <Play size={14} fill="currentColor" />} {previewLabel(previewState, active, preparing)}</button>
         <button className="button button--outline" disabled={!playable || (active && preparing)} onClick={() => onPlay(item, 'full')}><Waves size={14} /> Full track</button>
         <button className="button button--primary" disabled={!item.youtube_url || queueing} onClick={() => onQueue(item)}><Plus size={15} /> {queueing ? 'Queueing…' : 'Queue'}</button>
-        <DropdownMenu.Root><DropdownMenu.Trigger className="icon-button dig-card__more" aria-label="More actions"><MoreVertical size={18} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" sideOffset={7}>
-          <DropdownMenu.Item disabled={!item.youtube_url || queueing} onSelect={() => onQueue(item, true)}><WandSparkles size={13} /> Queue + stems</DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={() => navigator.clipboard.writeText(`${item.artist} — ${item.title}`)}>Copy track name</DropdownMenu.Item>
-          <DropdownMenu.Item disabled={!item.youtube_url} onSelect={() => item.youtube_url && openExternal(item.youtube_url)}>Open YouTube</DropdownMenu.Item>
-          <DropdownMenu.Item disabled={!item.discogs_url} onSelect={() => item.discogs_url && openExternal(item.discogs_url)}>Open Discogs</DropdownMenu.Item>
-        </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
+        <SongActionMenu item={item} queueing={queueing} {...actions} />
       </div>
       {item.discogs_url && <button className="discogs-credit" onClick={() => openExternal(item.discogs_url!)}>Data provided by Discogs</button>}
     </div>
@@ -81,6 +135,8 @@ export function DigitalCrate() {
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
   const player = usePlayerStore()
+  const [mpcItem, setMpcItem] = useState<Suggestion | null>(null)
+  const [mpcMode, setMpcMode] = useState<MpcExportMode>('both')
   const filters = useMemo(() => ({
     profile: crate.profile, year_min: eras[crate.era][1], year_max: eras[crate.era][2],
     country: crate.country || undefined, genre: crate.genre || undefined,
@@ -100,13 +156,53 @@ export function DigitalCrate() {
       hint_year: item.year, hint_discogs_master_id: item.discogs_master_id > 0 ? item.discogs_master_id : undefined,
       hint_discogs_release_id: item.discogs_release_id, source_platform_override: 'discogs_dig',
     }),
-    onSuccess: () => { toast('Track added to the ingestion queue', 'success'); queryClient.invalidateQueries({ queryKey: ['jobs'] }) },
+    onSuccess: (_, { item }) => {
+      if (item.youtube_video_id) crate.lockSource(item.discogs_master_id, item.youtube_video_id)
+      api.recordDiscoveryInteraction(item, 'queue').catch(() => undefined)
+      toast('Track added to the ingestion queue', 'success')
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (error) => toast(error.message, 'error'),
+  })
+  const rematch = useMutation({
+    mutationFn: async (item: Suggestion) => {
+      if (!item.youtube_video_id) throw new Error('This result has no audio source to replace.')
+      crate.rejectSource(item.discogs_master_id, item.youtube_video_id)
+      crate.setRematching(item.discogs_master_id, true)
+      const rejected = Array.from(new Set([...(crate.rejectedSources[item.discogs_master_id] || []), item.youtube_video_id]))
+      return { previous: item, replacement: await api.rematch(item, rejected) }
+    },
+    onSuccess: ({ previous, replacement }) => {
+      if (player.track?.videoId === previous.youtube_video_id) player.clear()
+      crate.replaceSource(previous.discogs_master_id, replacement)
+      crate.setRematching(previous.discogs_master_id, false)
+      if (replacement.youtube_video_id) {
+        api.prefetchPreviews([replacement.youtube_video_id]).then((result) => crate.setPreviewItems(result.items)).catch(() => undefined)
+      }
+      toast(`Selected another source: ${replacement.youtube_title || replacement.title}`, 'success')
+    },
+    onError: (error, item) => {
+      crate.setRematching(item.discogs_master_id, false)
+      toast(error.message)
+    },
+  })
+  const mpc = useMutation({
+    mutationFn: ({ item, mode }: { item: Suggestion; mode: MpcExportMode }) => api.enqueueMpc(item, mode),
+    onSuccess: (job, { item }) => {
+      crate.updateMpcJob(job)
+      if (item.youtube_video_id) crate.lockSource(item.discogs_master_id, item.youtube_video_id)
+      api.recordDiscoveryInteraction(item, 'mpc').catch(() => undefined)
+      setMpcItem(null)
+      toast(`MPC export queued: ${item.artist} — ${item.title}`, 'success')
+    },
+    onError: (error) => toast(`${error.message}. Check the MPC destination in Settings.`, 'error'),
+  })
+  const cancelMpc = useMutation({
+    mutationFn: (job: MpcJob) => api.cancelMpc(job.job_id),
+    onSuccess: () => toast('MPC export cancellation requested', 'success'),
     onError: (error) => toast(error.message, 'error'),
   })
 
-  useEffect(() => {
-    if (config.data?.has_discogs_token && crate.items.length === 0 && crate.digRun === 0) crate.ensureInitialDig()
-  }, [config.data?.has_discogs_token, crate.items.length, crate.digRun])
   useEffect(() => {
     if (!dig.data || crate.digRun === crate.appliedRun || handledRun.current === crate.digRun) return
     handledRun.current = crate.digRun
@@ -128,6 +224,19 @@ export function DigitalCrate() {
     player.playReel(crate.items, `preview-${item.youtube_video_id}`, mode)
   }
   const queue = (item: Suggestion, stems = false) => enqueue.mutate({ item, stems })
+  const openMpc = (item: Suggestion) => {
+    setMpcMode(crate.mpcJobs[item.youtube_video_id || '']?.mode || 'both')
+    setMpcItem(item)
+  }
+  const songActions = (item: Suggestion): Omit<ActionMenuProps, 'item' | 'queueing'> => ({
+    rematching: !!crate.rematching[item.discogs_master_id],
+    locked: crate.lockedSources[item.discogs_master_id] === item.youtube_video_id,
+    mpcJob: item.youtube_video_id ? crate.mpcJobs[item.youtube_video_id] : undefined,
+    onQueue: queue,
+    onRematch: (value) => rematch.mutate(value),
+    onMpc: openMpc,
+    onCancelMpc: (job) => cancelMpc.mutate(job),
+  })
   const bars = activePlaying ? player.spectrum : Array.from({ length: 48 }, (_, index) => 0.14 + ((index * 19) % 70) / 100)
 
   return <div className="page digital-crate">
@@ -144,18 +253,23 @@ export function DigitalCrate() {
     {dig.isError && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={startDig}>Try again</button></div>}
     {crate.message && <div className="notice"><Disc3 size={18} /><span>{crate.message}</span></div>}
 
-    <section className={`featured-dig ${activePlaying ? 'is-playing' : ''}`}>
-      <button className="featured-dig__signal" disabled={!featured || player.preparing} onClick={() => featured && play(featured)} aria-label="Preview featured gem">{player.preparing && activeSuggestion === featured ? <LoaderCircle size={25} className="spin" /> : <Play size={28} fill="currentColor" />}</button>
-      <div className="featured-dig__copy"><span>{activeSuggestion ? 'NOW PLAYING' : `TOP PULL · ${profiles.find(([value]) => value === crate.profile)?.[1]}`}</span>
-        <h2>{featured?.title || (digging ? 'Digging across several crates…' : needsDiscogs ? 'Connect Discogs to dig live gems' : 'Waiting for the next pull')}</h2><strong>{featured?.artist || 'Crate Digger'}</strong>
-        {featured && <SampleReasons item={featured} />}
-        <div className="hero-wave" aria-hidden="true">{bars.map((value, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.08, value)})` }} />)}</div>
-        {featured && <div className="featured-dig__actions"><button className="button button--primary" disabled={!featured.youtube_video_id || player.preparing} onClick={() => play(featured)}><Play size={14} /> {activeSuggestion === featured && player.playing ? 'Playing' : 'Preview'}</button><button className="button button--dark" disabled={!featured.youtube_video_id || player.preparing} onClick={() => play(featured, 'full')}><Waves size={14} /> Full track</button><button className="button button--dark" disabled={!featured.youtube_url} onClick={() => queue(featured)}><Plus size={14} /> Queue</button></div>}
-      </div><RecordArtwork item={featured} index={featuredIndex} featured playing={activePlaying} />
-    </section>
-    <div className={`dig-results dig-results--${crate.view}`}>{remaining.map((item) => {
-      const id = `preview-${item.youtube_video_id}`
-      return <SuggestionCard key={item.discogs_master_id} item={item} index={crate.items.indexOf(item)} previewState={item.youtube_video_id ? crate.previewStates[item.youtube_video_id] : undefined} active={player.track?.id === id} preparing={player.track?.id === id && player.preparing} queueing={enqueue.isPending && enqueue.variables?.item === item} onPlay={play} onQueue={queue} />
-    })}</div>
+    {!crate.items.length ? <section className={`dig-empty ${digging ? 'is-digging' : ''}`}>
+      <div className="dig-empty__art"><img src={crateArtwork} alt="A crate filled with records" /><span /></div>
+      <div className="dig-empty__copy"><span className="eyebrow">YOUR NEXT SAMPLE STARTS HERE</span><h2>{digging ? 'Digging through the shelves…' : 'Your crate is empty'}</h2><p>Choose a producer lens, era, country, or genre above. Nothing starts until you decide to dig.</p><button className="button button--primary button--large" onClick={startDig} disabled={digging || config.isPending}>{digging ? <LoaderCircle size={16} className="spin" /> : <Disc3 size={16} />}{needsDiscogs ? 'Add Discogs token' : digging ? 'Finding gems…' : 'Dig for gems'}</button></div>
+    </section> : <>
+      <section className={`featured-dig ${activePlaying ? 'is-playing' : ''}`}>
+        <button className="featured-dig__signal" disabled={!featured || player.preparing} onClick={() => featured && play(featured)} aria-label="Preview featured gem">{player.preparing && activeSuggestion === featured ? <LoaderCircle size={25} className="spin" /> : <Play size={28} fill="currentColor" />}</button>
+        <div className="featured-dig__copy"><span>{activeSuggestion ? 'NOW PLAYING' : `TOP PULL · ${profiles.find(([value]) => value === crate.profile)?.[1]}`}</span>
+          <h2>{featured!.title}</h2><strong>{featured!.artist}</strong><SampleReasons item={featured!} />
+          <div className="hero-wave" aria-hidden="true">{bars.map((value, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.08, value)})` }} />)}</div>
+          <div className="featured-dig__actions"><button className="button button--primary" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!)}><Play size={14} /> {activeSuggestion === featured && player.playing ? 'Playing' : 'Preview'}</button><button className="button button--dark" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!, 'full')}><Waves size={14} /> Full track</button><button className="button button--dark" disabled={!featured!.youtube_url} onClick={() => queue(featured!)}><Plus size={14} /> Queue</button><SongActionMenu item={featured!} queueing={enqueue.isPending && enqueue.variables?.item === featured} {...songActions(featured!)} /></div>
+        </div><RecordArtwork item={featured} index={featuredIndex} featured playing={activePlaying} />
+      </section>
+      <div className={`dig-results dig-results--${crate.view}`}>{remaining.map((item) => {
+        const id = `preview-${item.youtube_video_id}`
+        return <SuggestionCard key={item.discogs_master_id} item={item} index={crate.items.indexOf(item)} previewState={item.youtube_video_id ? crate.previewStates[item.youtube_video_id] : undefined} active={player.track?.id === id} preparing={player.track?.id === id && player.preparing} queueing={enqueue.isPending && enqueue.variables?.item === item} actions={songActions(item)} onPlay={play} onQueue={queue} />
+      })}</div>
+    </>}
+    <MpcModeDialog item={mpcItem} mode={mpcMode} open={!!mpcItem} busy={mpc.isPending} onMode={setMpcMode} onOpenChange={(open) => !open && setMpcItem(null)} onConfirm={() => mpcItem && mpc.mutate({ item: mpcItem, mode: mpcMode })} onSettings={() => { setMpcItem(null); navigate('/settings') }} />
   </div>
 }

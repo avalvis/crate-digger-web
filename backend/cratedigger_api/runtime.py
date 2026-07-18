@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core.database import RecordNotFoundError, TrackFilter, VaultDatabase
+from core.database import DiscoveryRecord, RecordNotFoundError, TrackFilter, VaultDatabase
 from utils.config import ConfigManager
 
 from .events import EventHub
@@ -119,6 +119,8 @@ class EngineRuntime:
         self._preview_prefetch: Any = None
         self._metadata: Any = None
         self._exporter: Any = None
+        self._stem_separator: Any = None
+        self._mpc_manager: Any = None
         self._media_error: str | None = None
         self._preview_paths: dict[str, Path] = {}
 
@@ -131,6 +133,8 @@ class EngineRuntime:
         return self._media_error
 
     def close(self) -> None:
+        if self._mpc_manager is not None:
+            self._mpc_manager.shutdown(cancel_pending=True)
         if self._preview_prefetch is not None:
             self._preview_prefetch.shutdown(cancel_pending=True)
         if self._queue is not None:
@@ -150,6 +154,7 @@ class EngineRuntime:
                 from core.downloader import Downloader
                 from core.exporter import MPCExporter
                 from core.metadata import MetadataWriter
+                from core.mpc_export_manager import MpcExportManager
                 from core.pipeline import IngestionPipeline
                 from core.preview import PreviewService
                 from core.preview_prefetch import PreviewPrefetchService
@@ -227,6 +232,22 @@ class EngineRuntime:
                     target_bit_depth=snap.config.export.bit_depth,
                     logger=self.log.getChild("exporter"),
                 )
+                self._stem_separator = stems
+                self._mpc_manager = MpcExportManager(
+                    preview=self._preview,
+                    stem_separator=stems,
+                    exporter=self._exporter,
+                    destination_root=lambda: Path(
+                        self.config.snapshot().config.general.mpc_samples_root
+                    ).expanduser(),
+                    staging_root=lambda: Path(
+                        self.config.snapshot().config.general.staging_root
+                    ).expanduser(),
+                    max_workers=snap.config.general.mpc_export_max_concurrent,
+                    logger=self.log.getChild("mpc_export"),
+                )
+                self._mpc_manager.subscribe(self._publish_mpc_event, weak=False)
+                self._mpc_manager.start()
                 self._queue = queue
                 self._pipeline = pipeline
                 self._media_error = None
@@ -290,6 +311,13 @@ class EngineRuntime:
         payload["state"] = event.state.value
         self.events.publish(payload)
 
+    def _publish_mpc_event(self, event: Any) -> None:
+        payload = dataclasses.asdict(event)
+        payload["type"] = f"mpc_{event.type.value}"
+        if event.job_id:
+            payload["job"] = self._mpc_job_payload(event.job_id)
+        self.events.publish(payload)
+
     def cancel_job(self, job_id: int) -> bool:
         if self._queue is not None:
             return bool(self._queue.cancel(job_id))
@@ -311,6 +339,122 @@ class EngineRuntime:
         count = int(values.pop("count", 8))
         suggestions = engine.dig_many(DiscoveryFilters(**values), count=count)
         return ([dataclasses.asdict(item) for item in suggestions], False, None)
+
+    @staticmethod
+    def _discovery_suggestion(values: dict[str, Any]) -> Any:
+        from core.discovery import DiscoverySuggestion
+
+        video_id = str(values.get("youtube_video_id") or "").strip()
+        youtube_url = str(values.get("youtube_url") or "").strip()
+        if not video_id or not youtube_url:
+            raise ValueError("This result has no usable YouTube source")
+        return DiscoverySuggestion(
+            discogs_master_id=int(values["discogs_master_id"]),
+            discogs_release_id=values.get("discogs_release_id"),
+            artist=str(values.get("artist") or "Unknown artist"),
+            title=str(values.get("title") or "Untitled"),
+            year=values.get("year"),
+            country=values.get("country"),
+            genre=values.get("genre"),
+            style=values.get("style"),
+            youtube_url=youtube_url,
+            youtube_video_id=video_id,
+            youtube_title=str(values.get("youtube_title") or ""),
+            youtube_duration_seconds=values.get("youtube_duration_seconds"),
+            match_score=float(values.get("match_score") or 0),
+            sample_score=float(values.get("sample_score") or 1),
+            sample_reasons=tuple(values.get("sample_reasons") or ()),
+            artwork_url=values.get("artwork_url"),
+            discogs_url=values.get("discogs_url"),
+        )
+
+    def rematch_discovery(self, values: dict[str, Any], exclude_video_ids: list[str]) -> dict[str, Any]:
+        engine = self.ensure_discovery()
+        if engine is None:
+            raise RuntimeUnavailable("Add a Discogs token in Settings to search for another source")
+        suggestion = self._discovery_suggestion(values)
+        replacement = engine.rematch_youtube(
+            suggestion,
+            exclude_video_ids=exclude_video_ids,
+        )
+        return dataclasses.asdict(replacement)
+
+    def record_discovery_interaction(self, values: dict[str, Any], action: str) -> None:
+        suggestion = self._discovery_suggestion(values)
+        self.db.record_discovery(DiscoveryRecord(
+            discogs_master_id=suggestion.discogs_master_id,
+            discogs_release_id=suggestion.discogs_release_id,
+            artist=suggestion.artist,
+            title=suggestion.title,
+            year=suggestion.year,
+            country=suggestion.country,
+            genre=suggestion.genre,
+            style=suggestion.style,
+            was_queued=action in {"queue", "mpc"},
+        ))
+        if action in {"queue", "mpc"}:
+            self.db.mark_discovery_queued(suggestion.discogs_master_id)
+
+    def _mpc_job_payload(self, job_id: str) -> dict[str, Any] | None:
+        if self._mpc_manager is None:
+            return None
+        job = next((item for item in self._mpc_manager.list_jobs() if item.job_id == job_id), None)
+        if job is None:
+            return None
+        return {
+            "job_id": job.job_id,
+            "video_id": job.suggestion.youtube_video_id,
+            "display_name": job.suggestion.display_name,
+            "mode": job.mode.value,
+            "state": job.state,
+            "message": job.message,
+            "percent": job.percent,
+            "error_message": job.error_message,
+            "track_dir": job.track_dir,
+        }
+
+    def list_mpc_jobs(self) -> list[dict[str, Any]]:
+        if self._mpc_manager is None:
+            return []
+        return [
+            payload for job in self._mpc_manager.list_jobs()
+            if (payload := self._mpc_job_payload(job.job_id)) is not None
+        ]
+
+    def enqueue_mpc(self, values: dict[str, Any], mode: str) -> dict[str, Any]:
+        self.ensure_media_engine()
+        from core.mpc_export import MpcExportMode
+
+        snap = self.config.snapshot()
+        destination = Path(snap.config.general.mpc_samples_root).expanduser()
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeUnavailable(f"MPC destination is unavailable: {destination} ({exc})") from exc
+        if not destination.is_dir() or not os.access(destination, os.W_OK):
+            raise RuntimeUnavailable(f"MPC destination is not writable: {destination}")
+        suggestion = self._discovery_suggestion(values)
+        job_id = self._mpc_manager.enqueue(suggestion, MpcExportMode(mode))
+        payload = self._mpc_job_payload(job_id)
+        if payload is None:
+            raise RuntimeUnavailable("MPC export did not enter the queue")
+        return payload
+
+    def cancel_mpc_job(self, job_id: str) -> bool:
+        if self._mpc_manager is None:
+            return False
+        job = self._mpc_job_payload(job_id)
+        if job is None or job["state"] not in {"queued", "running"}:
+            return False
+        self._mpc_manager.cancel_job(job_id)
+        return True
+
+    def clear_finished_mpc_jobs(self) -> int:
+        if self._mpc_manager is None:
+            return 0
+        before = len(self._mpc_manager.list_jobs())
+        self._mpc_manager.clear_finished()
+        return before - len(self._mpc_manager.list_jobs())
 
     def prefetch_previews(self, video_ids: list[str]) -> list[dict[str, object]]:
         self.ensure_media_engine()

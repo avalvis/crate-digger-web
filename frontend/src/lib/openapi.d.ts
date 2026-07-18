@@ -296,6 +296,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/discovery/rematch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rematch Discovery */
+        post: operations["rematch_discovery_api_discovery_rematch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discovery/interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Discovery Interaction */
+        post: operations["record_discovery_interaction_api_discovery_interactions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mpc/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Mpc Jobs */
+        get: operations["list_mpc_jobs_api_mpc_jobs_get"];
+        put?: never;
+        /** Create Mpc Job */
+        post: operations["create_mpc_job_api_mpc_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mpc/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel Mpc Job */
+        delete: operations["cancel_mpc_job_api_mpc_jobs__job_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mpc/jobs/clear-finished": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear Finished Mpc Jobs */
+        post: operations["clear_finished_mpc_jobs_api_mpc_jobs_clear_finished_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/previews/prefetch": {
         parameters: {
             query?: never;
@@ -529,6 +615,21 @@ export interface components {
              */
             count: number;
         };
+        /** DiscoveryInteractionRequest */
+        DiscoveryInteractionRequest: {
+            suggestion: components["schemas"]["Suggestion"];
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "preview" | "queue" | "mpc";
+        };
+        /** DiscoveryRematchRequest */
+        DiscoveryRematchRequest: {
+            suggestion: components["schemas"]["Suggestion"];
+            /** Exclude Video Ids */
+            exclude_video_ids?: string[];
+        };
         /** DiscoveryResponse */
         DiscoveryResponse: {
             /** Items */
@@ -581,6 +682,49 @@ export interface components {
             engine_ready: boolean;
             /** Engine Error */
             engine_error?: string | null;
+        };
+        /** MpcExportRequest */
+        MpcExportRequest: {
+            suggestion: components["schemas"]["Suggestion"];
+            /**
+             * Mode
+             * @default both
+             * @enum {string}
+             */
+            mode: "song" | "stems" | "both";
+        };
+        /** MpcJob */
+        MpcJob: {
+            /** Job Id */
+            job_id: string;
+            /** Video Id */
+            video_id: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "song" | "stems" | "both";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "completed" | "failed" | "cancelled";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Percent
+             * @default 0
+             */
+            percent: number;
+            /** Error Message */
+            error_message?: string | null;
+            /** Track Dir */
+            track_dir?: string | null;
         };
         /** PreviewPrefetchItem */
         PreviewPrefetchItem: {
@@ -1644,6 +1788,220 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DiscoveryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rematch_discovery_api_discovery_rematch_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryRematchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Suggestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_discovery_interaction_api_discovery_interactions_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscoveryInteractionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_mpc_jobs_api_mpc_jobs_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MpcJob"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_mpc_job_api_mpc_jobs_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MpcExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MpcJob"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_mpc_job_api_mpc_jobs__job_id__delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_finished_mpc_jobs_api_mpc_jobs_clear_finished_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
                 };
             };
             /** @description Validation Error */

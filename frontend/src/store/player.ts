@@ -11,6 +11,7 @@ export interface PlayerTrack {
   audioUrl?: string
   peaks?: number[]
   partial?: boolean
+  discoverySuggestion?: Suggestion
 }
 
 interface PlayerState {
@@ -54,6 +55,7 @@ function reelTrack(item: Suggestion, previous?: PlayerTrack): PlayerTrack {
     audioUrl: previous?.audioUrl,
     peaks: previous?.peaks,
     partial: previous?.partial,
+    discoverySuggestion: item,
   }
 }
 

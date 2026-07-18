@@ -175,6 +175,33 @@ class DiscoveryResponse(ApiModel):
     message: str | None = None
 
 
+class DiscoveryRematchRequest(ApiModel):
+    suggestion: Suggestion
+    exclude_video_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DiscoveryInteractionRequest(ApiModel):
+    suggestion: Suggestion
+    action: Literal["preview", "queue", "mpc"]
+
+
+class MpcExportRequest(ApiModel):
+    suggestion: Suggestion
+    mode: Literal["song", "stems", "both"] = "both"
+
+
+class MpcJob(ApiModel):
+    job_id: str
+    video_id: str
+    display_name: str
+    mode: Literal["song", "stems", "both"]
+    state: Literal["queued", "running", "completed", "failed", "cancelled"]
+    message: str = ""
+    percent: float = 0
+    error_message: str | None = None
+    track_dir: str | None = None
+
+
 class Crate(ApiModel):
     id: int
     name: str

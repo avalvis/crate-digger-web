@@ -51,7 +51,12 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
     api.preview(track.videoId, requestedMode)
       .then(async (prepared) => ({ prepared, audioUrl: await mediaUrl(prepared.audio_url) }))
       .then(({ prepared, audioUrl }) => {
-        if (!disposed) cachePrepared(id, prepared, audioUrl, token)
+        if (!disposed) {
+          cachePrepared(id, prepared, audioUrl, token)
+          if (track.discoverySuggestion) {
+            api.recordDiscoveryInteraction(track.discoverySuggestion, 'preview').catch(() => undefined)
+          }
+        }
       })
       .catch((error) => {
         if (disposed) return
@@ -59,7 +64,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
         toast(error.message, 'error')
       })
     return () => { disposed = true }
-  }, [track?.id, track?.videoId, preparing, requestedMode, requestToken, cachePrepared, preparationFailed, toast])
+  }, [track?.id, track?.videoId, track?.discoverySuggestion, preparing, requestedMode, requestToken, cachePrepared, preparationFailed, toast])
 
   useEffect(() => {
     if (!container.current || !track?.audioUrl) return

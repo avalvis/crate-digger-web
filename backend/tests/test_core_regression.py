@@ -5,7 +5,7 @@ from pathlib import Path
 
 from core.sampling_taxonomy import blended_score, sample_affinity
 from core.database import VaultDatabase
-from core.discovery import DiscogsCandidate, DiscoveryEngine, DiscoveryFilters
+from core.discovery import DiscogsCandidate, DiscoveryEngine, DiscoveryFilters, DiscoverySuggestion
 from utils.paths import build_vault_track_dir, sanitize_filename_component
 
 
@@ -171,3 +171,75 @@ def test_strong_song_match_skips_redundant_video_search(
 
     assert suggestion.youtube_video_id == "gem42"
     assert calls == ["songs"]
+
+
+def test_final_resolved_reel_defers_country_and_lane_repeats(tmp_path: Path, monkeypatch) -> None:
+    db = VaultDatabase(tmp_path / "vault.db")
+    engine = DiscoveryEngine(db, "test-token")
+
+    def candidate(master_id: int, country: str, genre: str, style: str) -> DiscogsCandidate:
+        return DiscogsCandidate(
+            master_id=master_id, release_id=master_id,
+            artist=f"Artist {master_id}", title=f"Record {master_id}",
+            year=1972, country=country, genres=(genre,), styles=(style,),
+            formats=("Vinyl",), have=50, want=100,
+        )
+
+    pool = [
+        candidate(1, "US", "Funk / Soul", "Soul"),
+        candidate(2, "US", "Funk / Soul", "Funk"),
+        candidate(3, "US", "Funk / Soul", "Soul"),
+        candidate(4, "Brazil", "Latin", "MPB"),
+        candidate(5, "Ghana", "Funk / Soul", "Afrobeat"),
+        candidate(6, "France", "Stage & Screen", "Library Music"),
+    ]
+    monkeypatch.setattr(engine, "_search_discogs", lambda *_args, **_kwargs: pool)
+    monkeypatch.setattr(engine, "_rank_and_shuffle", lambda *_args, **_kwargs: pool)
+
+    def match(cand: DiscogsCandidate) -> DiscoverySuggestion:
+        return DiscoverySuggestion(
+            discogs_master_id=cand.master_id, discogs_release_id=cand.release_id,
+            artist=cand.artist, title=cand.title, year=cand.year, country=cand.country,
+            genre=cand.genres[0], style=cand.styles[0],
+            youtube_url=f"https://youtube.com/watch?v=gem{cand.master_id}",
+            youtube_video_id=f"gem{cand.master_id}", youtube_title=cand.title,
+            youtube_duration_seconds=180, match_score=.95, sample_score=.9,
+            sample_reasons=(),
+        )
+
+    monkeypatch.setattr(engine, "_match_youtube", match)
+    reel = engine.dig_many(DiscoveryFilters(profile="boom_bap"), count=4)
+    db.close()
+
+    assert [item.discogs_master_id for item in reel] == [1, 2, 4, 6]
+
+
+def test_interacted_discovery_is_excluded_by_a_new_engine(tmp_path: Path) -> None:
+    db = VaultDatabase(tmp_path / "vault.db")
+    first = DiscoveryEngine(db, "test-token")
+    suggestion = DiscoverySuggestion(
+        discogs_master_id=42, discogs_release_id=99, artist="Dorothy Ashby",
+        title="Afro-Harping", year=1968, country="US", genre="Jazz",
+        style="Soul-Jazz", youtube_url="https://youtube.com/watch?v=gem42",
+        youtube_video_id="gem42", youtube_title="Afro-Harping",
+        youtube_duration_seconds=180, match_score=.95, sample_score=.98,
+        sample_reasons=(),
+    )
+    first.record_suggestion(suggestion)
+    fresh = DiscogsCandidate(
+        master_id=43, release_id=100, artist="Fresh Artist", title="Fresh Record",
+        year=1971, country="US", genres=("Jazz",), styles=("Soul-Jazz",),
+        formats=("Vinyl",), have=50, want=100,
+    )
+    heard = DiscogsCandidate(
+        master_id=42, release_id=99, artist="Dorothy Ashby", title="Afro-Harping",
+        year=1968, country="US", genres=("Jazz",), styles=("Soul-Jazz",),
+        formats=("Vinyl",), have=50, want=100,
+    )
+    second = DiscoveryEngine(db, "test-token")
+    ranked = second._rank_and_shuffle([heard, fresh], DiscoveryFilters())
+    no_repeats = second._rank_and_shuffle([heard], DiscoveryFilters())
+    db.close()
+
+    assert [item.master_id for item in ranked] == [43]
+    assert no_repeats == []

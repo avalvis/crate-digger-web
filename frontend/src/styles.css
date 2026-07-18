@@ -159,6 +159,34 @@ select { height: 35px; min-width: 145px; color: #e9e9e4; background: #161714; bo
 .menu-content [role="menuitem"] { padding: 8px 10px; font-size: 11px; outline: none; cursor: pointer; display: flex; align-items: center; gap: 7px; }
 .menu-content [role="menuitem"]:focus { background: #2c2d27; color: var(--yellow); }
 .menu-content [data-disabled] { opacity: .35; }
+.menu-separator { height: 1px; margin: 5px 4px; background: #34352f; }
+.mpc-inline { max-width: 100%; margin-top: 5px; color: #d8cf6e; font-size: 9px; font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mpc-inline--completed { color: #49d04e; }
+.mpc-inline--failed { color: #ff776d; }
+
+.dig-empty { min-height: 430px; margin-top: 14px; display: grid; grid-template-columns: minmax(360px, .9fr) minmax(420px, 1.1fr); align-items: center; overflow: hidden; position: relative; border: 1px solid #2c2d27; background: radial-gradient(circle at 24% 48%, #38371766, transparent 29%), linear-gradient(118deg, #0c0d0b, #151610 58%, #0a0b09); }
+.dig-empty::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5; background: radial-gradient(circle at 78% 24%, #f4df0019, transparent 24%), linear-gradient(135deg, transparent 32%, #3937192e 58%, transparent 76%); animation: mesh-drift 11s ease-in-out infinite alternate; }
+.dig-empty__art { min-height: 430px; align-self: stretch; position: relative; overflow: hidden; isolation: isolate; }
+.dig-empty__art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 52%, #11120ff2 98%), linear-gradient(0deg, #0d0e0c 0, transparent 32%); }
+.dig-empty__art img { width: 100%; height: 100%; position: absolute; inset: 0; object-fit: cover; object-position: center; filter: grayscale(1) contrast(1.12) brightness(.65); transform: scale(1.03); }
+.dig-empty__art span { position: absolute; z-index: 2; width: 150px; height: 150px; left: 50%; top: 50%; border-radius: 50%; border: 1px solid #f4df0040; transform: translate(-50%, -50%); box-shadow: 0 0 70px #f4df0020, inset 0 0 40px #000; }
+.dig-empty__copy { z-index: 1; max-width: 480px; padding: 52px 64px 52px 38px; }
+.dig-empty__copy h2 { margin: 9px 0 13px; color: #f5f5ef; font-size: clamp(32px, 4vw, 55px); line-height: .95; letter-spacing: -2px; text-transform: uppercase; }
+.dig-empty__copy p { max-width: 420px; margin: 0 0 25px; color: #9b9d94; font-size: 12px; line-height: 1.7; }
+.dig-empty.is-digging .dig-empty__art img { animation: empty-pulse 2.2s ease-in-out infinite alternate; }
+
+.mpc-dialog { position: fixed; z-index: 31; left: 50%; top: 50%; width: min(560px, 90vw); transform: translate(-50%, -50%); padding: 27px; border: 1px solid #3d3e37; background: #121310; box-shadow: 0 24px 90px #000e; }
+.mpc-dialog .panel-heading h2 { margin: 5px 0; }
+.mpc-mode-list { display: grid; gap: 7px; margin: 23px 0; }
+.mpc-mode-list label { min-height: 64px; display: flex; align-items: center; gap: 13px; padding: 11px 14px; border: 1px solid #30312c; background: #0d0e0c; cursor: pointer; }
+.mpc-mode-list label:hover, .mpc-mode-list label.active { border-color: #77701a; background: #1d1d10; }
+.mpc-mode-list input { accent-color: var(--yellow); }
+.mpc-mode-list span { display: flex; flex-direction: column; gap: 5px; }
+.mpc-mode-list strong { color: #e8e9e2; font-size: 11px; text-transform: uppercase; }
+.mpc-mode-list small { color: #7e8078; font-size: 9px; }
+.mpc-dialog__footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.mpc-dialog__footer .text-button { margin-right: auto; padding: 0; border: 0; background: transparent; color: #8e9088; font-size: 9px; text-transform: uppercase; text-decoration: underline; cursor: pointer; }
+.mpc-dialog__footer .text-button:hover { color: var(--yellow); }
 
 .player-bar { grid-column: 1 / 3; grid-row: 2; z-index: 10; display: grid; grid-template-columns: 260px minmax(330px, 1fr) 360px; align-items: center; gap: 18px; background: #10110f; border-top: 1px solid #2b2c28; box-shadow: 0 -9px 28px #0007; padding: 0 22px; }
 .player-track { display: flex; align-items: center; gap: 11px; min-width: 0; }
@@ -365,6 +393,7 @@ input:focus, textarea:focus { border-color: #7b7410; box-shadow: 0 0 0 1px #7b74
 .toast button { border: 0; background: none; color: #8c8e86; cursor: pointer; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes vinyl-spin { to { transform: rotate(360deg); } }
+@keyframes empty-pulse { from { filter: grayscale(1) contrast(1.12) brightness(.58); transform: scale(1.03); } to { filter: grayscale(1) contrast(1.18) brightness(.78); transform: scale(1.06); } }
 @keyframes mesh-drift { from { background-position: 0% 20%, 100% 50%, 0 0; } to { background-position: 35% 75%, 65% 15%, 0 0; } }
 
 @keyframes spin { to { transform: rotate(360deg); } }

@@ -87,6 +87,20 @@ export interface Suggestion {
 }
 
 export interface DiscoveryResponse { items: Suggestion[]; demo: boolean; message: string | null }
+export type DiscoveryInteraction = 'preview' | 'queue' | 'mpc'
+export type MpcExportMode = 'song' | 'stems' | 'both'
+
+export interface MpcJob {
+  job_id: string
+  video_id: string
+  display_name: string
+  mode: MpcExportMode
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  message: string
+  percent: number
+  error_message: string | null
+  track_dir: string | null
+}
 export interface Crate { id: number; name: string; description: string | null; created_at: string | null; track_count: number }
 
 export interface ConfigResponse {
@@ -131,7 +145,7 @@ export interface QueueEvent {
   message?: string
   error_message?: string
   track_id?: number
-  job?: QueueJob | null
+  job?: QueueJob | MpcJob | null
   video_id?: string
   state?: PreviewPrefetchItem['state']
   percent?: number
