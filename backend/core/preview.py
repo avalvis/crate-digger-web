@@ -33,6 +33,8 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
+from utils.youtube import youtube_options
+
 # Playback engine target: 44.1 kHz stereo float32 is universally safe for
 # sounddevice/PortAudio and matches the MPC's native rate.
 _PLAYBACK_SR = 44100
@@ -392,10 +394,12 @@ class PreviewService:
                 )
 
         opts: dict[str, Any] = {
+            **youtube_options(),
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "ffmpeg_location": self._ffmpeg,
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "logger": self._log,
             "no_color": True,
             "noprogress": True,
             "noplaylist": True,
@@ -457,8 +461,10 @@ class PreviewService:
 
         url = self._YT_WATCH.format(vid=vid)
         opts: dict[str, Any] = {
+            **youtube_options(),
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "logger": self._log,
             "noplaylist": True,
             "skip_download": True,
         }
@@ -516,10 +522,12 @@ class PreviewService:
                            "Fetching audio…")
 
         opts: dict[str, Any] = {
+            **youtube_options(),
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "ffmpeg_location": self._ffmpeg,
             "quiet": True,
-            "no_warnings": True,
+            "no_warnings": False,
+            "logger": self._log,
             "no_color": True,        # otherwise raw ANSI codes leak into
                                       # logged/surfaced error text
             "noprogress": True,

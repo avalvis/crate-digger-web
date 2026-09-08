@@ -26,10 +26,20 @@ def test_auth_and_health(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            "version": "0.2.4",
+            "version": "0.2.5",
             "engine_ready": False,
             "engine_error": None,
         }
+
+
+def test_tool_routes_require_session_and_reject_updates_before_a_check(tmp_path: Path) -> None:
+    with client_for(tmp_path) as client:
+        assert client.get("/api/tools").status_code == 401
+        assert client.post("/api/tools/update").status_code == 401
+        assert client.get("/api/tools", headers=HEADERS).json()["state"] == "idle"
+        assert client.post("/api/tools/check", headers=HEADERS).status_code == 202
+        assert client.post("/api/tools/update", headers=HEADERS).status_code == 409
+        assert client.post("/api/tools/rollback", headers=HEADERS).status_code == 409
 
 
 def test_windows_tauri_origin_can_reach_loopback_api(tmp_path: Path) -> None:

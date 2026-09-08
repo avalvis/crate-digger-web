@@ -11,11 +11,13 @@ from typing import Any
 
 from core.database import DiscoveryRecord, RecordNotFoundError, TrackFilter, VaultDatabase
 from utils.config import ConfigManager
+from utils import managed_tools
+from core.tool_manager import ToolManager
 
 from .events import EventHub
 
 
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 
 
 class RuntimeUnavailable(RuntimeError):
@@ -123,6 +125,7 @@ class EngineRuntime:
         self._mpc_manager: Any = None
         self._media_error: str | None = None
         self._preview_paths: dict[str, Path] = {}
+        self.tools = ToolManager(self.data_dir)
 
     @property
     def engine_ready(self) -> bool:
@@ -133,6 +136,7 @@ class EngineRuntime:
         return self._media_error
 
     def close(self) -> None:
+        self.tools.close()
         if self._mpc_manager is not None:
             self._mpc_manager.shutdown(cancel_pending=True)
         if self._preview_prefetch is not None:
@@ -164,6 +168,7 @@ class EngineRuntime:
 
                 snap = self.config.snapshot()
                 binaries = provision_ffmpeg(
+                    config_hint=managed_tools.executable("ffmpeg.exe"),
                     tools_dir=self.data_dir / "tools",
                     logger=self.log.getChild("ffmpeg"),
                 )

@@ -147,6 +147,27 @@ export interface PreviewResponse {
   partial: boolean
 }
 
+export interface MediaTool {
+  id: string
+  name: string
+  installed_version: string | null
+  latest_version: string | null
+  status: 'ready' | 'missing' | 'error' | 'update_available'
+  update_supported: boolean
+  optional: boolean
+  detail: string
+  latest_unavailable?: boolean
+}
+
+export interface ToolStatus {
+  state: 'idle' | 'checking' | 'updating' | 'ready' | 'error'
+  checked_at: string | null
+  message: string
+  tools: MediaTool[]
+  restart_required: boolean
+  can_rollback: boolean
+}
+
 export interface PreviewPrefetchItem {
   video_id: string
   state: 'pending' | 'downloading' | 'decoding' | 'ready' | 'failed' | 'cancelled'

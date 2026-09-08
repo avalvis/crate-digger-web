@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import yt_dlp
+from utils.youtube import youtube_options
 from yt_dlp.utils import DownloadError, ExtractorError
 
 
@@ -283,6 +284,7 @@ class Downloader:
 
     def _base_opts(self, staging_dir: Optional[Path]) -> dict[str, Any]:
         opts: dict[str, Any] = {
+            **youtube_options(),
             "format": _FORMAT_SPEC,
             "ffmpeg_location": self._ffmpeg_path,
             "quiet": True,

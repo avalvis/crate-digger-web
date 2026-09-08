@@ -16,12 +16,14 @@ import type {
   QueuePage,
   Track,
   TrackPage,
+  ToolStatus,
   TrackLocation,
 } from './types'
 
 interface RuntimeConfig { baseUrl: string; token: string }
 
 let runtimePromise: Promise<RuntimeConfig> | undefined
+let startupPromise: Promise<void> | undefined
 
 const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
@@ -37,12 +39,48 @@ async function loadRuntime(): Promise<RuntimeConfig> {
 }
 
 export function runtimeConfig() {
-  runtimePromise ??= loadRuntime()
+  runtimePromise ??= loadRuntime().catch((error) => {
+    runtimePromise = undefined
+    throw error
+  })
   return runtimePromise
+}
+
+async function waitForDesktopBackend(runtime: RuntimeConfig) {
+  if (!window.__TAURI_INTERNALS__) return
+  startupPromise ??= (async () => {
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 120_000)
+    try {
+      while (!controller.signal.aborted) {
+        try {
+          const response = await fetch(`${runtime.baseUrl}/api/health`, {
+            signal: controller.signal,
+            headers: { 'X-Crate-Token': runtime.token },
+          })
+          if (!response.ok) throw Object.assign(new Error(`Local startup check failed (${response.status})`), { status: response.status })
+          return
+        } catch (error) {
+          if (error && typeof error === 'object' && 'status' in error) throw error
+          if (!controller.signal.aborted) await delay(350)
+        }
+      }
+      throw new Error('Crate Digger could not finish starting. Close and reopen the app. Details are in crate-digger-startup.log in the app data folder.')
+    } finally {
+      window.clearTimeout(timeout)
+    }
+  })().catch((error) => {
+    startupPromise = undefined
+    throw error
+  })
+  return startupPromise
 }
 
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 90_000): Promise<T> {
   const runtime = await runtimeConfig()
+  // One shared readiness check lets a cold one-file backend finish extracting
+  // before settings/queue requests begin. Commands themselves are never retried.
+  await waitForDesktopBackend(runtime)
   const requestUrl = `${runtime.baseUrl}${path}`
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -56,21 +94,7 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 90_0
       },
   }
   try {
-    const startupDeadline = Date.now() + 30_000
-    let response: Response
-    while (true) {
-      try {
-        response = await fetch(requestUrl, requestInit)
-        break
-      } catch (error) {
-        if (controller.signal.aborted) throw error
-        // The packaged one-file Python engine needs a few seconds to extract on
-        // first launch. Retry connection failures only; HTTP failures still
-        // surface immediately and commands are never replayed after a response.
-        if (!window.__TAURI_INTERNALS__ || Date.now() >= startupDeadline) throw error
-        await delay(350)
-      }
-    }
+    const response = await fetch(requestUrl, requestInit)
     if (!response.ok) {
       const body = await response.json().catch(() => null)
       const detail = body?.detail
@@ -98,6 +122,10 @@ export async function mediaUrl(path: string): Promise<string> {
 }
 
 export const api = {
+  tools: () => request<ToolStatus>('/api/tools'),
+  checkTools: () => request<ToolStatus>('/api/tools/check', { method: 'POST' }),
+  updateTools: () => request<ToolStatus>('/api/tools/update', { method: 'POST' }),
+  rollbackTools: () => request<ToolStatus>('/api/tools/rollback', { method: 'POST' }),
   config: () => request<ConfigResponse>('/api/config'),
   patchConfig: (section: string, values: Record<string, unknown>) =>
     request<ConfigResponse>('/api/config', { method: 'PATCH', body: JSON.stringify({ section, values }) }),

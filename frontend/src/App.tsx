@@ -14,6 +14,7 @@ import { ManualRip } from './features/ManualRip'
 import { Vault } from './features/Vault'
 import { Crates } from './features/Crates'
 import { Settings } from './features/Settings'
+import { ToolStatusBanner } from './components/ToolStatus'
 
 export default function App() {
   const [queueOpen, setQueueOpen] = useState(false)
@@ -69,6 +70,7 @@ export default function App() {
       <Sidebar jobs={jobs.data?.items || []} summary={jobs.data?.summary} onQueue={() => setQueueOpen(true)} />
       <div className="app-main">
         <Topbar query={vaultQuery} onQuery={setVaultQuery} />
+        <ToolStatusBanner />
         <main className="content-scroll">
           <Routes>
             <Route path="/" element={<DigitalCrate />} />

@@ -151,6 +151,7 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         event_hub.bind()
         runtime_holder["runtime"] = EngineRuntime(data_dir or default_data_dir(), event_hub)
+        runtime_holder["runtime"].tools.start_check()
         yield
         runtime_holder["runtime"].close()
 
@@ -198,6 +199,28 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
     @app.get("/api/config", response_model=ConfigResponse)
     def get_config(_: Guard, core: Runtime) -> ConfigResponse:
         return ConfigResponse(**core.config_payload())
+
+    @app.get("/api/tools")
+    def tool_status(_: Guard, core: Runtime) -> dict[str, Any]:
+        return core.tools.snapshot()
+
+    @app.post("/api/tools/check", status_code=202)
+    def check_tools(_: Guard, core: Runtime) -> dict[str, Any]:
+        return core.tools.start_check()
+
+    @app.post("/api/tools/update", status_code=202)
+    def update_tools(_: Guard, core: Runtime) -> dict[str, Any]:
+        try:
+            return core.tools.start_update()
+        except ValueError as exc:
+            raise _error("tool_update_unavailable", str(exc), 409) from exc
+
+    @app.post("/api/tools/rollback")
+    def rollback_tools(_: Guard, core: Runtime) -> dict[str, Any]:
+        try:
+            return core.tools.rollback()
+        except ValueError as exc:
+            raise _error("tool_rollback_unavailable", str(exc), 409) from exc
 
     @app.patch("/api/config", response_model=ConfigResponse)
     def patch_config(payload: ConfigPatch, _: Guard, core: Runtime) -> ConfigResponse:

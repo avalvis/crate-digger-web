@@ -42,3 +42,13 @@ def test_private_ffmpeg_is_reused_without_recopying(tmp_path: Path, monkeypatch)
 
     assert Path(second.ffmpeg_path).resolve() == Path(first.ffmpeg_path).resolve()
     assert Path(second.ffmpeg_path).stat().st_mtime_ns == first_mtime
+
+
+def test_managed_ffmpeg_is_discoverable_without_a_system_install(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "")
+    bundled = provision_ffmpeg(tools_dir=tmp_path / "tools")
+    monkeypatch.setenv("PATH", "")
+    provision_ffmpeg(config_hint=bundled.ffmpeg_path)
+    from yt_dlp.downloader.external import FFmpegFD
+    assert FFmpegFD.available()
+    assert Path(shutil.which("ffmpeg")).resolve() == Path(bundled.ffmpeg_path).resolve()

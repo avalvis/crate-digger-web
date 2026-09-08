@@ -40,4 +40,38 @@ Install Rust and Tauri prerequisites, then package the Python sidecar and deskto
 npm --prefix .\frontend run desktop:build
 ```
 
-`build-sidecar.ps1` packages the engine installed in `.venv`. The current Windows bundle includes the CPU Torch/Demucs runtime and is therefore about 277 MB; a future lightweight distribution can publish that engine as a separate optional pack.
+`build-sidecar.ps1` packages the engine installed in `.venv`. The Windows bundle includes the CPU Torch/Demucs runtime and is several hundred MB; a future lightweight distribution can publish that engine as a separate optional pack.
+
+YouTube support also bundles the Node.js executable used for the build (22 or newer)
+and the matching `yt-dlp-ejs` challenge solver. To refresh YouTube compatibility,
+update the project's downloader before rebuilding the sidecar and desktop app:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]" ytmusicapi imageio-ffmpeg
+```
+
+Updating `.venv` alone does not update an already installed desktop executable.
+Normal desktop launches do not require administrator privileges. The interface
+waits up to two minutes for a cold backend startup. Launch diagnostics are kept in
+`%LOCALAPPDATA%\com.cratedigger.desktop\crate-digger-startup.log`; media and settings
+diagnostics are in `crate-digger-desktop.log` beside it.
+
+## Startup tool checks (v0.2.5)
+
+Every launch checks the installed media tools in the background and queries the
+publishers for current releases. **Settings → Media tools & updates** shows the
+installed/latest versions and an **Update tools** button. Offline release checks
+are reported as unavailable and do not prevent use of installed tools.
+
+The app can independently update FFmpeg/FFprobe (stable Windows x64 builds), Node
+(latest LTS), yt-dlp, its matching EJS solver, and ytmusicapi. It verifies publisher
+SHA-256 checksums, validates the downloaded tools in a separate process, and
+activates a complete release on the next launch. **Restore previous tools**
+selects the prior release for the next launch. No administrator privileges or
+system-wide Python/Node installation is needed.
+
+Audio-analysis and stem libraries are checked too, but native/ML dependency
+upgrades stay part of tested application releases. Newer incompatible downloader
+dependencies are likewise reported instead of partially replacing working tools.
+Managed releases live under the app data directory in `media-tools`; updates do
+not overwrite the installed application or an in-use tool release.

@@ -3,14 +3,14 @@
 Pillow>=10.4.0,<12.0
 
 # ─── Downloading & Media Tooling ─────────────────────────────────────
-yt-dlp>=2025.9.5
+yt-dlp[default]>=2026.8.19    # Includes the matching YouTube JS challenge solver
 mutagen>=1.47.0
 imageio-ffmpeg>=0.5.1          # Auto-provisions ffmpeg binary; no PATH required
 
 # ─── Discovery APIs ──────────────────────────────────────────────────
 # Discovery talks to Discogs over raw HTTP via `requests`; the official
 # discogs client is intentionally not used.
-ytmusicapi>=1.8.2
+ytmusicapi>=1.12.2
 requests>=2.32.0
 
 # ─── DSP / Analysis ──────────────────────────────────────────────────

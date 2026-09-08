@@ -91,6 +91,41 @@ def _run_internal_worker() -> bool:
         return False
 
     mode = sys.argv[1]
+    if mode == "--internal-tools-probe":
+        from pathlib import Path
+        import importlib.resources
+        import json
+        import subprocess
+
+        stage = Path(sys.argv[2]).resolve()
+        packages = stage / "packages"
+        if packages.is_dir():
+            sys.path.insert(0, str(packages))
+        import yt_dlp
+        import yt_dlp.version
+        import yt_dlp_ejs
+        import ytmusicapi
+
+        if packages.is_dir():
+            for module in (yt_dlp, yt_dlp_ejs, ytmusicapi):
+                if not Path(module.__file__).resolve().is_relative_to(packages):
+                    raise RuntimeError("Staged package was not loaded")
+        solver = importlib.resources.files("yt_dlp_ejs.yt.solver")
+        if not solver.joinpath("core.min.js").read_bytes() or not solver.joinpath("lib.min.js").read_bytes():
+            raise RuntimeError("YouTube challenge solver assets are missing")
+        from utils.youtube import youtube_options
+        options = youtube_options()
+        node = stage / "bin" / "node.exe"
+        if node.is_file():
+            options["js_runtimes"]["node"] = {"path": str(node)}
+        node_path = options["js_runtimes"].get("node", {}).get("path")
+        if node_path:
+            subprocess.run([node_path, "--eval", "process.exit(1+1===2?0:1)"], check=True,
+                           capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with yt_dlp.YoutubeDL({**options, "quiet": True, "cachedir": False}):
+            pass
+        print(json.dumps({"yt_dlp": yt_dlp.version.__version__, "status": "ok"}))
+        return True
     if mode == "--internal-runtime-probe":
         import json
         import demucs
@@ -129,6 +164,9 @@ def _run_internal_worker() -> bool:
 def main() -> None:
     _configure_utf8_stdio()
     _exit_when_desktop_parent_closes()
+    from utils.managed_tools import activate, default_data_dir
+
+    activate(default_data_dir())
     if _run_internal_worker():
         return
 

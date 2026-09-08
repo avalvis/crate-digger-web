@@ -1,4 +1,6 @@
 use serde::Serialize;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -72,6 +74,16 @@ fn available_port() -> u16 {
         .unwrap_or(8765)
 }
 
+fn startup_log(path: &std::path::Path, message: &str) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let port = available_port();
@@ -89,6 +101,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let data_dir = app.path().app_local_data_dir()?;
+            fs::create_dir_all(&data_dir)?;
+            let log_path = data_dir.join("crate-digger-startup.log");
+            if fs::metadata(&log_path)
+                .map(|m| m.len() > 3 * 1024 * 1024)
+                .unwrap_or(false)
+            {
+                let _ = fs::copy(&log_path, data_dir.join("crate-digger-startup.log.1"));
+                let _ = fs::write(&log_path, "");
+            }
+            startup_log(&log_path, "Starting local backend");
             let command = app
                 .shell()
                 .sidecar("crate-digger-api")?
@@ -99,7 +121,10 @@ pub fn run() {
                     data_dir.to_string_lossy().to_string(),
                 )
                 .env("CRATEDIGGER_PARENT_PID", std::process::id().to_string());
-            let (mut events, child) = command.spawn()?;
+            let (mut events, child) = command.spawn().map_err(|error| {
+                startup_log(&log_path, &format!("Could not launch backend: {error}"));
+                error
+            })?;
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = events.recv().await {
                     match event {
@@ -107,12 +132,24 @@ pub fn run() {
                             println!("[crate-digger-api] {}", String::from_utf8_lossy(&bytes));
                         }
                         CommandEvent::Stderr(bytes) => {
-                            eprintln!("[crate-digger-api] {}", String::from_utf8_lossy(&bytes));
+                            // Uvicorn includes the session token in WebSocket URLs.
+                            let message =
+                                String::from_utf8_lossy(&bytes).replace(&token, "[redacted]");
+                            startup_log(&log_path, &message);
+                            eprintln!("[crate-digger-api] {message}");
                         }
                         CommandEvent::Error(error) => {
+                            startup_log(&log_path, &format!("Backend process error: {error}"));
                             eprintln!("[crate-digger-api] process error: {error}");
                         }
                         CommandEvent::Terminated(payload) => {
+                            startup_log(
+                                &log_path,
+                                &format!(
+                                    "Backend terminated: code={:?} signal={:?}",
+                                    payload.code, payload.signal
+                                ),
+                            );
                             eprintln!(
                                 "[crate-digger-api] terminated: code={:?} signal={:?}",
                                 payload.code, payload.signal

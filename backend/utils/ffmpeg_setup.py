@@ -98,6 +98,7 @@ def provision_ffmpeg(
         hinted = Path(config_hint).expanduser()
         result = _try_path(str(hinted), "config", log)
         if result is not None:
+            _expose_ffmpeg_to_child_processes(result.ffmpeg_path)
             log.info("Using ffmpeg from config: %s", result.ffmpeg_path)
             return result
         log.warning(
