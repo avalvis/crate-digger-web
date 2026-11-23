@@ -17,7 +17,7 @@ requests>=2.32.0
 librosa>=0.10.2,<0.12
 numpy>=1.26,<3.0
 scipy>=1.13
-soundfile>=0.12.1
+soundfile>=0.14.0
 
 # ─── Stem Separation ─────────────────────────────────────────────────
 # Pinned exact stack for reproducible Python 3.14 runtime behavior.
