@@ -1,6 +1,6 @@
 # Install backend/requirements.txt first. The CustomTkinter desktop UI has
 # intentionally been removed; Pillow remains part of the artwork pipeline.
-Pillow>=10.4.0,<12.0
+Pillow>=13.0.0,<14.0
 
 # ─── Downloading & Media Tooling ─────────────────────────────────────
 yt-dlp[default]>=2026.8.19    # Includes the matching YouTube JS challenge solver
