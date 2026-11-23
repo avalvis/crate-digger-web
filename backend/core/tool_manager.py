@@ -7,6 +7,7 @@ tested part of the application bundle.
 from __future__ import annotations
 
 import copy
+import csv
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -24,7 +25,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
@@ -50,8 +51,21 @@ PACKAGES = {
     "demucs": ("Stem separation", "demucs", False),
 }
 UPDATABLE_PACKAGES = ("yt-dlp", "yt-dlp-ejs", "ytmusicapi")
+# Packages that move together. A failure in one group never blocks another.
+PACKAGE_GROUPS = {"yt-dlp": ("yt-dlp", "yt-dlp-ejs"), "ytmusicapi": ("ytmusicapi",)}
+# Pure-Python dependencies that may be staged next to an updated package when
+# the copy bundled with the app is too old (for example certifi's CA bundle).
+# Native/compiled dependencies are never staged; they ship with app releases.
+STAGEABLE_DEPENDENCIES = set(managed_tools.STAGEABLE_MODULES) - set(UPDATABLE_PACKAGES)
+# Optional extras that are still required for YouTube to work.
+ESSENTIAL_DEPENDENCIES = {"yt-dlp-ejs"}
+PURE_WHEEL = re.compile(r"-(?:py3|py2\.py3)-none-any\.whl$")
 ALLOWED_HOSTS = {"pypi.org", "files.pythonhosted.org", "nodejs.org", "www.gyan.dev"}
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+
+def canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def utc_now() -> str:
@@ -167,6 +181,63 @@ def extract_checked(archive: Path, target: Path, *, binaries: bool = False) -> N
                 shutil.copyfileobj(source, output)
 
 
+UPDATE_STATUSES = {"missing", "error", "update_available", "update_failed"}
+
+
+def dependency_kind(dependency: Requirement) -> str | None:
+    """``hard`` for required, ``soft`` for yt-dlp's default extra, else None."""
+    if dependency.marker is None or dependency.marker.evaluate({"extra": ""}):
+        return "hard"
+    if dependency.marker.evaluate({"extra": "default"}):
+        return "soft"
+    return None
+
+
+def pure_wheel(info: dict[str, Any]) -> dict[str, Any] | None:
+    return next((file for file in info.get("urls", [])
+                 if PURE_WHEEL.search(file["filename"]) and not file.get("yanked")), None)
+
+
+def python_supported(info: dict[str, Any]) -> bool:
+    requires_python = info["info"].get("requires_python")
+    return not requires_python or SpecifierSet(requires_python).contains(platform.python_version())
+
+
+def remove_distribution(packages: Path, name: str) -> None:
+    """Uninstall a previously staged wheel using its RECORD file."""
+    if not packages.is_dir():
+        return
+    root = packages.resolve()
+    for dist_info in list(packages.glob("*.dist-info")):
+        if canonical(dist_info.name.removesuffix(".dist-info").rsplit("-", 1)[0]) != name:
+            continue
+        tops = set()
+        record = dist_info / "RECORD"
+        if record.is_file():
+            for row in csv.reader(record.read_text(encoding="utf-8").splitlines()):
+                if not row:
+                    continue
+                relative = PurePosixPath(row[0])
+                target = (packages / Path(*relative.parts)).resolve()
+                if not target.is_relative_to(root) or target == root:
+                    continue
+                tops.add(relative.parts[0])
+                if target.is_file():
+                    target.unlink()
+        shutil.rmtree(dist_info, ignore_errors=True)
+        for top in tops:
+            folder = packages / top
+            if folder.is_dir() and not folder.name.endswith(".dist-info"):
+                for cache in list(folder.rglob("__pycache__")):
+                    shutil.rmtree(cache, ignore_errors=True)
+                for directory in sorted((p for p in [folder, *folder.rglob("*")] if p.is_dir()),
+                                        key=lambda p: len(p.parts), reverse=True):
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass
+
+
 def binary_version(path: str, *args: str) -> str:
     result = subprocess.run([path, *args], capture_output=True, text=True, timeout=15,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -176,8 +247,10 @@ def binary_version(path: str, *args: str) -> str:
 
 
 class ToolManager:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, channel: Callable[[], str] = lambda: "stable"):
         self.data_dir = Path(data_dir)
+        # "stable" or "nightly"; read on every check so Settings apply at once.
+        self._channel = channel
         self.root = self.data_dir / "media-tools"
         self.log = logging.getLogger("cratedigger.tools")
         self._lock = threading.RLock()
@@ -252,6 +325,8 @@ class ToolManager:
             releases = json_from("https://nodejs.org/dist/index.json")
             # Node LTS is the supported production channel, not experimental/current.
             return next(item["version"].removeprefix("v") for item in releases if item.get("lts") and "win-x64-zip" in item.get("files", []))
+        if name == "yt-dlp":
+            return self._root_metadata(name)["info"]["version"]
         metadata = json_from(f"https://pypi.org/pypi/{name}/json")
         if name == "yt-dlp-ejs":
             downloader = json_from("https://pypi.org/pypi/yt-dlp/json")
@@ -266,6 +341,10 @@ class ToolManager:
 
     def _check(self) -> None:
         try:
+            try:
+                self.collect_garbage()
+            except OSError:
+                self.log.warning("Could not remove unused tool releases", exc_info=True)
             items = self._local_tools()
             self._set(tools=items)
             def check(item: dict[str, Any]) -> dict[str, Any]:
@@ -305,37 +384,129 @@ class ToolManager:
         temporary.write_text(json.dumps(manifest), encoding="utf-8")
         os.replace(temporary, path)
 
-    def _install_packages(self, stage: Path) -> None:
-        metadata = {name: json_from(f"https://pypi.org/pypi/{name}/json") for name in UPDATABLE_PACKAGES}
-        # The solver must match the downloader's declared dependency, which may
-        # differ from the solver's newest independent release.
-        for text in metadata["yt-dlp"]["info"].get("requires_dist") or []:
-            requirement = Requirement(text)
-            if requirement.name == "yt-dlp-ejs" and not requirement.specifier.contains(metadata["yt-dlp-ejs"]["info"]["version"]):
-                candidates = [v for v in metadata["yt-dlp-ejs"]["releases"] if requirement.specifier.contains(v)]
-                if not candidates:
-                    raise ValueError("No compatible YouTube challenge solver is available.")
-                version = str(max(map(Version, candidates)))
-                metadata["yt-dlp-ejs"] = json_from(f"https://pypi.org/pypi/yt-dlp-ejs/{version}/json")
-        selected = {name: info["info"]["version"] for name, info in metadata.items()}
-        for name, info in metadata.items():
-            requires_python = info["info"].get("requires_python")
-            if requires_python and not SpecifierSet(requires_python).contains(platform.python_version()):
-                raise ValueError(f"The latest {name} needs a newer application Python runtime. Current tools were kept.")
+    def nightly(self) -> bool:
+        try:
+            return self._channel() == "nightly"
+        except Exception:
+            return False
+
+    def _root_metadata(self, root: str) -> dict[str, Any]:
+        """PyPI metadata for the release of ``root`` this channel installs."""
+        metadata = json_from(f"https://pypi.org/pypi/{root}/json")
+        if root != "yt-dlp" or not self.nightly():
+            return metadata
+        # yt-dlp publishes nightly builds to PyPI as dev pre-releases.
+        versions = []
+        for text, files in metadata.get("releases", {}).items():
+            try:
+                version = Version(text)
+            except InvalidVersion:
+                continue
+            if files and not all(file.get("yanked") for file in files):
+                versions.append(version)
+        newest = max(versions, default=None)
+        if newest is None or str(newest) == metadata["info"]["version"]:
+            return metadata
+        return json_from(f"https://pypi.org/pypi/{root}/{newest}/json")
+
+    def _release_matching(self, dependency: Requirement) -> dict[str, Any] | None:
+        """Newest stable PyPI release of a pure-Python dependency that fits."""
+        metadata = json_from(f"https://pypi.org/pypi/{dependency.name}/json")
+        versions = []
+        for text, files in metadata.get("releases", {}).items():
+            try:
+                version = Version(text)
+            except InvalidVersion:
+                continue
+            if files and not version.is_prerelease and dependency.specifier.contains(version):
+                versions.append(version)
+        for version in sorted(versions, reverse=True)[:5]:
+            info = metadata if Version(metadata["info"]["version"]) == version else json_from(
+                f"https://pypi.org/pypi/{dependency.name}/{version}/json")
+            if pure_wheel(info) and python_supported(info):
+                return info
+        return None
+
+    def _resolve_group(self, root: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        """Choose every distribution to stage for one package group.
+
+        Dependencies already satisfied by the app are left alone. Unsatisfied
+        pure-Python ones are staged too; optional ones that cannot be staged
+        keep the bundled copy, which the package treats as a soft feature.
+        """
+        selected = {canonical(root): self._root_metadata(root)}
+        pending = [selected[canonical(root)]]
+        notes: list[str] = []
+        while pending:
+            info = pending.pop()
+            owner = info["info"]["name"]
             for text in info["info"].get("requires_dist") or []:
                 dependency = Requirement(text)
-                if dependency.marker and not any(dependency.marker.evaluate({"extra": extra}) for extra in ("", "default")):
+                kind = dependency_kind(dependency)
+                if kind is None:
                     continue
-                version = selected.get(dependency.name) or installed_version(dependency.name)
-                if not version or not dependency.specifier.contains(version, prereleases=True):
-                    raise ValueError(f"Updating {name} requires a compatible {dependency.name}. Install a newer app build first.")
-            wheel = next((file for file in info["urls"] if file["filename"].endswith("-py3-none-any.whl") and not file.get("yanked")), None)
-            if wheel is None:
-                raise ValueError(f"No compatible {name} package is available.")
-            archive = stage / f"{name}.whl"
-            download_verified(wheel["url"], archive, wheel["digests"]["sha256"], 25 * 1024 * 1024)
-            extract_checked(archive, stage / "packages")
-            archive.unlink()
+                key = canonical(dependency.name)
+                if key in selected:
+                    if not dependency.specifier.contains(selected[key]["info"]["version"], prereleases=True):
+                        raise ValueError(f"{owner} needs {dependency}, which conflicts with the other tool updates.")
+                    continue
+                current = installed_version(dependency.name)
+                if current and dependency.specifier.contains(current, prereleases=True):
+                    continue
+                if key in STAGEABLE_DEPENDENCIES or key in UPDATABLE_PACKAGES:
+                    found = self._release_matching(dependency)
+                    if found is not None:
+                        selected[key] = found
+                        pending.append(found)
+                        continue
+                if kind == "hard" or key in ESSENTIAL_DEPENDENCIES:
+                    raise ValueError(f"{owner} needs {dependency}, which can only ship with a newer app build. "
+                                     "Current tools were kept.")
+                notes.append(f"{owner}: optional {dependency.name} support stays at the bundled version.")
+        for key, info in selected.items():
+            if not python_supported(info):
+                raise ValueError(f"The latest {info['info']['name']} needs a newer application Python runtime. "
+                                 "Current tools were kept.")
+            if pure_wheel(info) is None:
+                raise ValueError(f"No compatible {info['info']['name']} package is available.")
+        return selected, notes
+
+    def _install_group(self, root: str, stage: Path) -> list[str]:
+        """Resolve, download and verify one package group into ``stage``."""
+        selected, notes = self._resolve_group(root)
+        packages = stage / "packages"
+        downloads = stage / "downloads"
+        downloads.mkdir(parents=True, exist_ok=True)
+        try:
+            # Every archive is verified before the stage is modified.
+            archives = []
+            for key, info in selected.items():
+                wheel = pure_wheel(info)
+                archive = downloads / f"{key}.whl"
+                download_verified(wheel["url"], archive, wheel["digests"]["sha256"], 25 * 1024 * 1024)
+                archives.append((key, archive))
+            packages.mkdir(exist_ok=True)
+            for key, archive in archives:
+                remove_distribution(packages, key)
+                extract_checked(archive, packages)
+        finally:
+            shutil.rmtree(downloads, ignore_errors=True)
+        staged = ", ".join(f"{info['info']['name']} {info['info']['version']}" for info in selected.values())
+        self.log.info("Staged %s", staged)
+        return notes
+
+    def collect_garbage(self) -> None:
+        """Remove tool releases that are neither active, previous, nor loaded."""
+        releases = self.root / "releases"
+        if not releases.is_dir():
+            return
+        keep = managed_tools.referenced_releases(self.root)
+        loaded = managed_tools.active_release()
+        if loaded is not None:
+            keep.add(loaded.name)
+        for path in releases.iterdir():
+            if path.is_dir() and re.fullmatch(r"[a-f0-9]{32}", path.name) and path.name not in keep:
+                shutil.rmtree(path, ignore_errors=True)
 
     def _install_binary(self, name: str, stage: Path) -> None:
         if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
@@ -375,9 +546,11 @@ class ToolManager:
 
     def _update(self) -> None:
         stage = None
+        activated = False
+        failures: dict[str, str] = {}
         try:
             items = self.snapshot()["tools"]
-            needed = {item["id"] for item in items if item["update_supported"] and item["status"] in {"missing", "error", "update_available"}}
+            needed = {item["id"] for item in items if item["update_supported"] and item["status"] in UPDATE_STATUSES}
             if not needed:
                 self._set(state="ready", message="No independently updatable tools need an update.")
                 return
@@ -387,17 +560,31 @@ class ToolManager:
             active = managed_tools.active_release()
             if active:
                 shutil.copytree(active, stage, dirs_exist_ok=True)
-            if needed.intersection(UPDATABLE_PACKAGES):
-                packages = stage / "packages"
-                if packages.exists():
-                    if not packages.resolve().is_relative_to((self.root / "releases").resolve()):
-                        raise ValueError("Invalid staging path")
-                    shutil.rmtree(packages)
-                self._install_packages(stage)
+            updated: list[str] = []
+            notes: list[str] = []
+            # Each group and binary is independent: one failure never blocks the rest.
+            for root, members in PACKAGE_GROUPS.items():
+                if not needed.intersection(members):
+                    continue
+                self._set(message=f"Downloading and verifying {root}…")
+                try:
+                    notes += self._install_group(root, stage)
+                    updated.append(root)
+                except Exception as exc:
+                    self.log.warning("Could not update %s: %s", root, exc)
+                    failures.update({member: str(exc) for member in members if member in needed})
             for binary in ("ffmpeg", "node"):
-                if binary in needed:
-                    self._set(message=f"Downloading and verifying {binary}…")
+                if binary not in needed:
+                    continue
+                self._set(message=f"Downloading and verifying {binary}…")
+                try:
                     self._install_binary(binary, stage)
+                    updated.append(binary)
+                except Exception as exc:
+                    self.log.warning("Could not update %s: %s", binary, exc)
+                    failures[binary] = str(exc)
+            if not updated:
+                raise ValueError(next(iter(failures.values()), "No tools could be updated."))
             self._set(message="Testing the downloaded tools…")
             self._validate_packages(stage)
             if self._closed:
@@ -408,13 +595,29 @@ class ToolManager:
                 old = json.loads(active_file.read_text(encoding="utf-8"))
             self._write_manifest(self.root / "previous.json", old)
             self._write_manifest(active_file, {"release": name, "installed_at": utc_now()})
-            self._set(state="ready", restart_required=True, can_rollback=True,
-                      message="Tools downloaded and verified. Close and reopen Crate Digger to use them.")
+            activated = True
+            for note in notes:
+                self.log.info(note)
+            message = f"Updated {', '.join(updated)}. Close and reopen Crate Digger to use them."
+            if failures:
+                message += f" {len(failures)} tool(s) could not be updated; see details below."
+            self._set(state="ready", restart_required=True, can_rollback=True, message=message,
+                      tools=self._mark_failures(failures))
         except Exception as exc:
             self.log.exception("Media tool update failed")
-            self._set(state="error", message=str(exc))
-        # Immutable release folders are retained for rollback. Failed stages
-        # are never referenced by active.json and cannot replace working tools.
+            self._set(state="error", message=f"Update failed: {exc}", tools=self._mark_failures(failures))
+        finally:
+            # Only the activated release is kept; failed stages are discarded.
+            if stage is not None and not activated:
+                shutil.rmtree(stage, ignore_errors=True)
+
+    def _mark_failures(self, failures: dict[str, str]) -> list[dict[str, Any]]:
+        tools = self.snapshot()["tools"]
+        for tool in tools:
+            if tool["id"] in failures:
+                tool["status"] = "update_failed"
+                tool["detail"] = failures[tool["id"]]
+        return tools
 
     def rollback(self) -> dict[str, Any]:
         with self._lock:

@@ -237,9 +237,9 @@ Rebuild the sidecar after changing Python backend code or Python dependencies:
 This command:
 
 1. Uses `.venv` and installs PyInstaller if necessary.
-2. Packages FastAPI and the complete media engine into one executable.
-3. Creates `dist\crate-digger-api.exe`.
-4. Copies the correctly named sidecar into `src-tauri\binaries` for Tauri.
+2. Packages FastAPI and the complete media engine into a one-folder bundle (`dist\crate-digger-api\`), so nothing is unpacked to `%TEMP%` at every launch.
+3. Checks the bundle contains the YouTube solver, Node.js, ytmusicapi data and the Demucs model registry, then starts it once to confirm it reports its port.
+4. Copies the bundle into `src-tauri\resources\crate-digger-api`, which the installer ships next to the app.
 
 The build can take several minutes because Torch, Demucs, SciPy, and FFmpeg are included. Warnings about unavailable CUDA, TensorBoard, or Linux libraries are expected in the CPU-only Windows build.
 
@@ -312,10 +312,10 @@ npm --prefix .\frontend install package-name
 
 ### Lightweight backend package
 
-Add it to `backend/requirements.txt`, then run:
+Add it to `backend/requirements.txt` (runtime) or `backend/requirements-dev.txt` (tests and tooling only), then run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r .\backend\requirements-dev.txt
 ```
 
 ### Media-engine package

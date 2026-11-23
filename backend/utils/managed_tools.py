@@ -9,6 +9,34 @@ from pathlib import Path
 
 _release: Path | None = None
 
+# Distribution name -> import name for every pure-Python package the tool
+# updater may stage. The staged-tools probe imports each of these.
+STAGEABLE_MODULES = {
+    "yt-dlp": "yt_dlp",
+    "yt-dlp-ejs": "yt_dlp_ejs",
+    "ytmusicapi": "ytmusicapi",
+    "certifi": "certifi",
+    "requests": "requests",
+    "urllib3": "urllib3",
+    "idna": "idna",
+    "charset-normalizer": "charset_normalizer",
+    "websockets": "websockets",
+    "mutagen": "mutagen",
+}
+
+
+def referenced_releases(root: Path) -> set[str]:
+    """Release folder names named by the active or previous manifest."""
+    names = set()
+    for manifest in ("active.json", "previous.json"):
+        try:
+            name = json.loads((root / manifest).read_text(encoding="utf-8")).get("release")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
 
 def release_from_manifest(root: Path, manifest: dict) -> Path | None:
     name = manifest.get("release", "")

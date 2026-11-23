@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crate-digger-api"
-version = "0.2.3"
+version = "0.2.6"
 description = "Local FastAPI adapter for the Crate Digger media engine"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,8 @@ dependencies = [
   "pydantic>=2.10,<3.0",
   "keyring>=25.0",
   "numpy>=1.26,<3.0",
+  "packaging>=24.0",
+  "requests>=2.32.2,<3",
 ]
 
 [project.optional-dependencies]

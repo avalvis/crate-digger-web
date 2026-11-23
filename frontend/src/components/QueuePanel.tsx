@@ -5,7 +5,7 @@ import {
   RefreshCw, RotateCcw, Search, Square, Trash2, X,
 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { api } from '../lib/api'
 import type { QueueJob, QueuePage } from '../lib/types'
 import { useToastStore } from '../store/toast'

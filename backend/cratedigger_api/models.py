@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StringConstraints
 
 
 class ApiModel(BaseModel):
@@ -295,8 +295,14 @@ class PreviewResponse(ApiModel):
     partial: bool
 
 
+# YouTube video ids are exactly 11 URL-safe base64 characters. Validating at the
+# API boundary keeps ids out of file globs and downloader output templates.
+VIDEO_ID_PATTERN = r"^[A-Za-z0-9_-]{11}$"
+VideoId = Annotated[str, StringConstraints(pattern=VIDEO_ID_PATTERN)]
+
+
 class PreviewPrefetchRequest(ApiModel):
-    video_ids: list[str] = Field(min_length=1, max_length=24)
+    video_ids: list[VideoId] = Field(min_length=1, max_length=24)
 
 
 class PreviewPrefetchItem(ApiModel):

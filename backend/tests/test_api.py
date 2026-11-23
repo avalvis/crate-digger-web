@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from core.database import TrackRecord, VaultDatabase
 from cratedigger_api.app import create_app
-from cratedigger_api.runtime import EngineRuntime
+from cratedigger_api.runtime import APP_VERSION, EngineRuntime
 
 
 TOKEN = "test-session"
@@ -26,7 +26,7 @@ def test_auth_and_health(tmp_path: Path) -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            "version": "0.2.5",
+            "version": APP_VERSION,
             "engine_ready": False,
             "engine_error": None,
         }
@@ -286,14 +286,18 @@ def test_preview_prefetch_and_full_mode_contracts(monkeypatch, tmp_path: Path) -
 
     monkeypatch.setattr(EngineRuntime, "prefetch_previews", prefetch)
     monkeypatch.setattr(EngineRuntime, "create_preview", preview)
+    a, b = "dQw4w9WgXcQ", "9bZkp7q19f0"
     with client_for(tmp_path) as client:
-        queued = client.post("/api/previews/prefetch", headers=HEADERS, json={"video_ids": ["a", "b"]})
+        queued = client.post("/api/previews/prefetch", headers=HEADERS, json={"video_ids": [a, b]})
         assert queued.status_code == 202
-        assert [item["video_id"] for item in queued.json()["items"]] == ["a", "b"]
-        full = client.post("/api/previews/a?mode=full", headers=HEADERS)
+        assert [item["video_id"] for item in queued.json()["items"]] == [a, b]
+        full = client.post(f"/api/previews/{a}?mode=full", headers=HEADERS)
         assert full.status_code == 200
         assert full.json()["partial"] is False
-    assert calls == [("prefetch", ["a", "b"]), ("preview", ("a", "full"))]
+        # Ids that are not genuine YouTube ids never reach the engine.
+        assert client.post("/api/previews/prefetch", headers=HEADERS, json={"video_ids": ["../../etc"]}).status_code == 422
+        assert client.post("/api/previews/a*b?mode=full", headers=HEADERS).status_code == 422
+    assert calls == [("prefetch", [a, b]), ("preview", (a, "full"))]
 
 
 def _suggestion_payload(video_id: str = "gem42") -> dict[str, object]:

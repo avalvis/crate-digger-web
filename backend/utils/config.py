@@ -36,7 +36,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -161,6 +161,9 @@ class DownloaderConfig(BaseModel):
     retries: int = Field(default=5, ge=0, le=20)
     fragment_retries: int = Field(default=5, ge=0, le=20)
     concurrent_fragments: int = Field(default=4, ge=1, le=16)
+    # "nightly" tracks yt-dlp's nightly builds, which fix YouTube breakage
+    # days before a stable release. Applies to the in-app tool updater.
+    update_channel: Literal["stable", "nightly"] = "stable"
 
 
 class StemsConfig(BaseModel):

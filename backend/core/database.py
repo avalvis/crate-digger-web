@@ -382,6 +382,24 @@ class CrateAssignmentConflictError(DatabaseError):
 # ─── The DAO ─────────────────────────────────────────────────────────
 
 
+def _execute_script(conn: sqlite3.Connection, script: str) -> None:
+    """Run a multi-statement script inside the caller's transaction.
+
+    ``executescript`` commits any open transaction first, which would make
+    migrations non-atomic.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip() and not all(
+        part.strip().startswith("--") or not part.strip() for part in statement.splitlines()
+    ):
+        conn.execute(statement)
+
+
 class VaultDatabase:
     """
     Thread-safe SQLite DAO for vault.db. One instance per app.
@@ -437,7 +455,7 @@ class VaultDatabase:
         """Create schema if missing, then run any pending migrations."""
         try:
             with self._writing() as conn:
-                conn.executescript(_SCHEMA_SQL)
+                _execute_script(conn, _SCHEMA_SQL)
                 current = self._get_schema_version(conn)
                 if current is None:
                     # Fresh install — stamp schema and app version.
@@ -473,7 +491,7 @@ class VaultDatabase:
         """Run sequential migrations. Extended in future schema versions."""
         self._log.info("Migrating vault.db from v%d to v%d", from_v, to_v)
         if from_v < 2:
-            conn.executescript("""
+            _execute_script(conn, """
                 DROP INDEX IF EXISTS idx_queue_status;
                 DROP INDEX IF EXISTS idx_queue_created;
                 ALTER TABLE queue_jobs RENAME TO queue_jobs_v1;
@@ -525,7 +543,7 @@ class VaultDatabase:
             if "updated_at" not in crate_columns:
                 conn.execute("ALTER TABLE crates ADD COLUMN updated_at TEXT")
             conn.execute("UPDATE crates SET updated_at = created_at WHERE updated_at IS NULL")
-            conn.executescript("""
+            _execute_script(conn, """
                 ALTER TABLE crate_tracks RENAME TO crate_tracks_v2;
                 CREATE TABLE crate_tracks (
                     crate_id INTEGER NOT NULL,
@@ -587,7 +605,9 @@ class VaultDatabase:
             timeout=10.0,
             detect_types=sqlite3.PARSE_DECLTYPES,
             isolation_level=None,  # autocommit mode — we manage txns explicitly
-            check_same_thread=True,
+            # Each thread still uses its own connection; this only lets
+            # close() release every connection at shutdown.
+            check_same_thread=False,
         )
         conn.row_factory = sqlite3.Row
 
@@ -746,18 +766,13 @@ class VaultDatabase:
                 rating            = excluded.rating,
                 notes             = excluded.notes,
                 tags              = excluded.tags
+            RETURNING id
         """
         with self._writing() as conn:
-            cur = conn.execute(sql, params)
-            if cur.lastrowid and cur.rowcount == 1:
-                # True insert (INSERT, not ON CONFLICT update)
-                track.id = cur.lastrowid
-            else:
-                row = conn.execute(
-                    "SELECT id FROM tracks WHERE file_path=?",
-                    (track.file_path,),
-                ).fetchone()
-                track.id = int(row["id"]) if row else None
+            # RETURNING yields the row id for both the insert and the
+            # ON CONFLICT update; lastrowid is stale after an update.
+            row = conn.execute(sql, params).fetchone()
+            track.id = int(row["id"]) if row else None
         assert track.id is not None, "upsert should always yield an id"
         return track.id
 
@@ -1188,7 +1203,12 @@ class VaultDatabase:
         archived_at: Optional[str] = None,
         started_at: Optional[str] = None,
         completed_at: Optional[str] = None,
-    ) -> None:
+        expected_status: Optional[Iterable[str]] = None,
+    ) -> bool:
+        """Update a job; with ``expected_status`` this is a compare-and-set.
+
+        Returns False when no row matched (unknown id, or its status changed).
+        """
         sets: list[str] = []
         params: list[Any] = []
         for col, val in (
@@ -1209,13 +1229,53 @@ class VaultDatabase:
                 sets.append(f"{col}=?")
                 params.append(val)
         if not sets:
-            return
+            return False
         params.append(job_id)
+        where = "id=?"
+        if expected_status is not None:
+            expected = tuple(expected_status)
+            where += f" AND status IN ({','.join('?' for _ in expected)})"
+            params.extend(expected)
         with self._writing() as conn:
-            conn.execute(
-                f"UPDATE queue_jobs SET {', '.join(sets)} WHERE id=?",
+            cur = conn.execute(
+                f"UPDATE queue_jobs SET {', '.join(sets)} WHERE {where}",
                 params,
             )
+            return cur.rowcount > 0
+
+    def queue_overview(self) -> tuple[dict[str, int], list[int], Optional[int]]:
+        """Live-queue status counts, pending ids in queue order, current job id.
+
+        Aggregated in SQL so the summary stays exact however long the queue is.
+        """
+        with self._reading() as conn:
+            counts = {
+                str(row["status"]): int(row["n"])
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) AS n FROM queue_jobs WHERE archived_at IS NULL GROUP BY status"
+                )
+            }
+            pending = [
+                int(row["id"]) for row in conn.execute(
+                    "SELECT id FROM queue_jobs WHERE archived_at IS NULL AND status='pending' ORDER BY created_at, id"
+                )
+            ]
+            current = conn.execute(
+                "SELECT id FROM queue_jobs WHERE archived_at IS NULL AND status IN "
+                "('downloading','analyzing','tagging','separating_stems') "
+                "ORDER BY COALESCE(started_at, created_at) LIMIT 1"
+            ).fetchone()
+        return counts, pending, (int(current["id"]) if current else None)
+
+    def find_unfinished_job(self, source_url: str) -> Optional[int]:
+        """Id of a pending or running job for ``source_url``, if any."""
+        with self._reading() as conn:
+            row = conn.execute(
+                "SELECT id FROM queue_jobs WHERE source_url=? AND status IN "
+                "('pending','downloading','analyzing','tagging','separating_stems') LIMIT 1",
+                (source_url,),
+            ).fetchone()
+        return int(row["id"]) if row else None
 
     def list_queue_jobs(
         self,

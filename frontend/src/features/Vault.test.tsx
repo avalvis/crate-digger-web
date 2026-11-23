@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, mediaUrl } from '../lib/api'
 import type { Track } from '../lib/types'
@@ -17,6 +17,8 @@ vi.mock('../lib/api', () => ({
     trackWaveform: vi.fn(),
   },
   mediaUrl: vi.fn(),
+  runtimeConfig: vi.fn().mockResolvedValue({ baseUrl: 'http://127.0.0.1:4983', token: 'session' }),
+  buildMediaUrl: (runtime: { baseUrl: string; token: string }, path: string) => `${runtime.baseUrl}${path}?token=${runtime.token}`,
 }))
 
 vi.mock('../lib/desktop', () => ({ openFolder: vi.fn() }))
@@ -89,5 +91,25 @@ describe('Vault artwork and inspector', () => {
     await waitFor(() => expect(usePlayerStore.getState().track?.artworkUrl).toBe(
       'http://127.0.0.1:4983/api/tracks/11/artwork?token=session',
     ))
+  })
+})
+
+describe('large vaults', () => {
+  it('loads further pages instead of stopping at the first one', async () => {
+    const page = (offset: number, count: number) => ({
+      items: Array.from({ length: count }, (_, index) => ({ ...track, id: offset + index + 1, title: `Song ${offset + index + 1}` })),
+      total: 250, limit: 200, offset,
+    })
+    usePlayerStore.getState().clear()
+    vi.mocked(api.tracks).mockClear()
+    vi.mocked(api.tracks).mockImplementation(async (_query, values = {}) => page(values.offset || 0, values.offset ? 50 : 200))
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter><Vault query="" /></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('250 records in the vault')).toBeInTheDocument()
+    expect(await screen.findByText('Song 200')).toBeInTheDocument()
+    expect(screen.queryByText('Song 201')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Load more (200 of 250)' }))
+    expect(await screen.findByText('Song 250')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Load more/ })).toBeNull()
+    expect(vi.mocked(api.tracks).mock.calls.map(([, values]) => values?.offset)).toEqual([0, 200])
   })
 })

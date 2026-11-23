@@ -8,6 +8,8 @@ import { api, mediaUrl } from '../lib/api'
 import { measuredListeningDelta } from '../lib/listening'
 import { useDigitalCrateStore } from '../store/digitalCrate'
 import { usePlayerStore } from '../store/player'
+import { useSpectrumStore } from '../store/spectrum'
+import { useShallow } from 'zustand/react/shallow'
 import { useToastStore } from '../store/toast'
 
 function duration(value: number) {
@@ -34,8 +36,16 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
     track, playlist, currentIndex, playing, preparing, requestedMode, requestToken,
     volume, muted, shuffle, repeat, setPlaying, setVolume, setMuted,
     selectRelative, toggleShuffle, toggleRepeat, cachePrepared, preparationFailed,
-    requestFull, setSpectrum, clear,
-  } = usePlayerStore()
+    requestFull, clear,
+  } = usePlayerStore(useShallow((state) => ({
+    track: state.track, playlist: state.playlist, currentIndex: state.currentIndex, playing: state.playing,
+    preparing: state.preparing, requestedMode: state.requestedMode, requestToken: state.requestToken,
+    volume: state.volume, muted: state.muted, shuffle: state.shuffle, repeat: state.repeat,
+    setPlaying: state.setPlaying, setVolume: state.setVolume, setMuted: state.setMuted,
+    selectRelative: state.selectRelative, toggleShuffle: state.toggleShuffle, toggleRepeat: state.toggleRepeat,
+    cachePrepared: state.cachePrepared, preparationFailed: state.preparationFailed,
+    requestFull: state.requestFull, clear: state.clear,
+  })))
   const toast = useToastStore((state) => state.show)
   const config = useQuery({ queryKey: ['config'], queryFn: api.config })
 
@@ -188,7 +198,7 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
             const average = energy / Math.max(1, Math.min(end, bins.length) - start)
             return Math.max(0.08, Math.pow(average / 255, 0.78))
           })
-          usePlayerStore.getState().setSpectrum(values)
+          useSpectrumStore.getState().setValues(values)
         }
         frame = window.requestAnimationFrame(paint)
       } catch {

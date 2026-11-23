@@ -22,6 +22,9 @@ interface DigitalCrateState {
   mpcJobs: Record<string, MpcJob>
   playedVideoIds: string[]
   listenedSeconds: Record<string, number>
+  /** Live status line streamed from the backend while a dig runs. */
+  digStatus: string | null
+  setDigStatus: (value: string | null) => void
   setProfile: (value: ProducerProfile) => void
   setEra: (value: number) => void
   setCountry: (value: string) => void
@@ -58,6 +61,8 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
   mpcJobs: {},
   playedVideoIds: [],
   listenedSeconds: {},
+  digStatus: null,
+  setDigStatus: (digStatus) => set({ digStatus }),
   setProfile: (profile) => set({ profile }),
   setEra: (era) => set({ era }),
   setCountry: (country) => set({ country }),

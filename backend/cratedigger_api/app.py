@@ -1,13 +1,19 @@
+import asyncio
 import dataclasses
 import logging
 import mimetypes
 import os
+import re
+import secrets
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Path as PathParam
+from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,6 +28,8 @@ from core.database import (
 
 from .events import EventHub
 from .models import (
+    VIDEO_ID_PATTERN,
+
     ConfigPatch,
     ConfigResponse,
     Crate,
@@ -58,7 +66,16 @@ from .models import (
     TrackPage,
     TrackPatch,
 )
-from .runtime import APP_VERSION, EngineRuntime, RuntimeUnavailable, default_data_dir
+from .runtime import APP_VERSION, EngineRuntime, JobConflict, OperationCancelled, RuntimeUnavailable, default_data_dir
+
+
+VideoIdParam = Annotated[str, PathParam(pattern=VIDEO_ID_PATTERN)]
+HEARTBEAT_SECONDS = 15.0
+_MEDIA_PATH = re.compile(r"^/api/(tracks/\d+/(audio|artwork|stems/[^/]+)|previews/[A-Za-z0-9_-]{11}/audio)$")
+
+
+def _is_media_path(path: str) -> bool:
+    return bool(_MEDIA_PATH.match(path))
 
 
 def _error(code: str, message: str, status_code: int = 400) -> HTTPException:
@@ -117,7 +134,14 @@ def _stream_file(path: Path, range_header: str | None) -> StreamingResponse | Fi
         if unit.lower() != "bytes":
             raise ValueError
         start_text, end_text = value.split("-", 1)
-        start = int(start_text) if start_text else 0
+        if not start_text:
+            # Suffix range "bytes=-N": the final N bytes of the file.
+            suffix = int(end_text)
+            if suffix <= 0:
+                raise ValueError
+            start, end_text = max(0, size - suffix), str(size - 1)
+        else:
+            start = int(start_text)
         end = int(end_text) if end_text else min(size - 1, start + 1024 * 1024 - 1)
         end = min(end, size - 1)
         if start < 0 or start > end:
@@ -143,7 +167,10 @@ def _stream_file(path: Path, range_header: str | None) -> StreamingResponse | Fi
 
 
 def create_app(*, data_dir: Path | None = None, api_token: str | None = None) -> FastAPI:
-    token = api_token or os.environ.get("CRATEDIGGER_TOKEN", "cratedigger-local")
+    # The well-known development token is only a fallback for source runs;
+    # a packaged build without a session token gets an unguessable one.
+    fallback = secrets.token_urlsafe(32) if getattr(sys, "frozen", False) else "cratedigger-local"
+    token = api_token or os.environ.get("CRATEDIGGER_TOKEN") or fallback
     event_hub = EventHub()
     runtime_holder: dict[str, EngineRuntime] = {}
 
@@ -161,6 +188,15 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         version=APP_VERSION,
         lifespan=lifespan,
     )
+    app.state.event_hub = event_hub
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(_: Request, exc: Exception) -> JSONResponse:
+        # Same error shape as handled errors, so the UI can always show a message.
+        logging.getLogger("cratedigger.web").error("Unhandled API error", exc_info=exc)
+        return JSONResponse(status_code=500, content={"detail": {
+            "code": "internal_error", "message": f"Something went wrong: {exc}"}})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -179,10 +215,15 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         return runtime_holder["runtime"]
 
     def authorize(
+        request: Request,
         x_crate_token: Annotated[str | None, Header()] = None,
         bearer: Annotated[str | None, Header(alias="Authorization")] = None,
         query_token: Annotated[str | None, Query(alias="token")] = None,
     ) -> None:
+        # <audio>/<img> cannot send headers, so only media routes accept the
+        # token in the URL; it would otherwise leak into logs for no reason.
+        if query_token and not _is_media_path(request.url.path):
+            query_token = None
         supplied = x_crate_token or query_token
         if not supplied and bearer and bearer.startswith("Bearer "):
             supplied = bearer[7:]
@@ -226,7 +267,8 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
     def patch_config(payload: ConfigPatch, _: Guard, core: Runtime) -> ConfigResponse:
         try:
             core.update_config(payload.section, payload.values)
-        except Exception as exc:
+        except (ValueError, TypeError, AttributeError) as exc:
+            # pydantic's ValidationError is a ValueError.
             raise _error("invalid_config", str(exc), 422) from exc
         return ConfigResponse(**core.config_payload())
 
@@ -338,23 +380,14 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         records = core.db.list_queue_jobs(
             statuses=statuses, limit=limit, view=view, query=query, offset=offset,
         )
-        pending = sorted(
-            (job for job in core.db.list_queue_jobs(statuses=("pending",), limit=500, view="queue")),
-            key=lambda job: job.created_at or "",
-        )
-        positions = {job.id: index + 1 for index, job in enumerate(pending)}
-        live = core.db.list_queue_jobs(limit=500, view="queue")
-        running_statuses = {"downloading", "analyzing", "tagging", "separating_stems"}
-        running = sorted(
-            (job for job in live if job.status in running_statuses),
-            key=lambda job: job.started_at or job.created_at or "",
-        )
+        counts, pending_ids, current_job_id = core.db.queue_overview()
+        positions = {job_id: index + 1 for index, job_id in enumerate(pending_ids)}
         summary = QueueSummary(
-            running=len(running),
-            waiting=sum(job.status == "pending" for job in live),
-            completed=sum(job.status == "complete" for job in live),
-            attention=sum(job.status in {"failed", "complete_with_warnings"} for job in live),
-            current_job_id=running[0].id if running else None,
+            running=sum(counts.get(state, 0) for state in ("downloading", "analyzing", "tagging", "separating_stems")),
+            waiting=counts.get("pending", 0),
+            completed=counts.get("complete", 0),
+            attention=counts.get("failed", 0) + counts.get("complete_with_warnings", 0),
+            current_job_id=current_job_id,
         )
         return QueuePage(
             items=[_queue_job(job, positions.get(job.id)) for job in records],
@@ -372,7 +405,9 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             job_id = await run_in_threadpool(core.enqueue, values)
         except RuntimeUnavailable as exc:
             raise _error("engine_unavailable", str(exc), 503) from exc
-        return _queue_job(core.db.get_queue_job(job_id))
+        except JobConflict as exc:
+            raise _error("job_duplicate", str(exc), 409) from exc
+        return _queue_job(await run_in_threadpool(core.db.get_queue_job, job_id))
 
     @app.post("/api/jobs/cancel-all", response_model=QueueActionResponse)
     def cancel_all_jobs(_: Guard, core: Runtime) -> QueueActionResponse:
@@ -392,9 +427,9 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             retry_id = await run_in_threadpool(core.retry_job, job_id)
         except (RecordNotFoundError, RuntimeUnavailable) as exc:
             raise _error("job_retry_unavailable", str(exc), 409) from exc
-        except Exception as exc:
+        except JobConflict as exc:
             raise _error("job_not_retryable", str(exc), 409) from exc
-        return _queue_job(core.db.get_queue_job(retry_id))
+        return _queue_job(await run_in_threadpool(core.db.get_queue_job, retry_id))
 
     @app.post("/api/jobs/{job_id}/archive", status_code=204)
     def archive_job(job_id: int, _: Guard, core: Runtime) -> None:
@@ -412,10 +447,16 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             items, demo, message = await run_in_threadpool(core.discover, payload.model_dump())
         except RuntimeUnavailable as exc:
             raise _error("discovery_unavailable", str(exc), 503) from exc
+        except OperationCancelled as exc:
+            raise _error("dig_cancelled", str(exc), 409) from exc
         except Exception as exc:
             logging.getLogger("cratedigger.web").exception("Dig failed")
             raise _error("dig_failed", str(exc), 502) from exc
         return DiscoveryResponse(items=[Suggestion(**item) for item in items], demo=demo, message=message)
+
+    @app.delete("/api/discovery/dig", response_model=QueueActionResponse)
+    def cancel_dig(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=core.cancel_discovery())
 
     @app.post("/api/discovery/rematch", response_model=Suggestion)
     async def rematch_discovery(payload: DiscoveryRematchRequest, _: Guard, core: Runtime) -> Suggestion:
@@ -487,11 +528,11 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
 
     @app.get("/api/previews/prefetch", response_model=PreviewPrefetchResponse)
     async def preview_status(video_ids: str, _: Guard, core: Runtime) -> PreviewPrefetchResponse:
-        values = [value for value in video_ids.split(",") if value]
+        values = [value for value in video_ids.split(",") if re.fullmatch(VIDEO_ID_PATTERN, value)]
         return PreviewPrefetchResponse(items=await run_in_threadpool(core.preview_status, values))
 
     @app.post("/api/previews/{video_id}", response_model=PreviewResponse)
-    async def create_preview(video_id: str, _: Guard, core: Runtime, mode: str = Query(default="quick", pattern="^(quick|full)$")) -> PreviewResponse:
+    async def create_preview(video_id: VideoIdParam, _: Guard, core: Runtime, mode: str = Query(default="quick", pattern="^(quick|full)$")) -> PreviewResponse:
         try:
             return PreviewResponse(**await run_in_threadpool(core.create_preview, video_id, mode))
         except RuntimeUnavailable as exc:
@@ -500,7 +541,7 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             raise _error("preview_failed", str(exc), 502) from exc
 
     @app.get("/api/previews/{video_id}/audio")
-    def preview_audio(video_id: str, request: Request, _: Guard, core: Runtime) -> Any:
+    def preview_audio(video_id: VideoIdParam, request: Request, _: Guard, core: Runtime) -> Any:
         path = core.preview_path(video_id)
         if not path:
             raise _error("preview_missing", "Preview has not been prepared", 404)
@@ -636,7 +677,13 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
             accepted = await run_in_threadpool(core.export_tracks, payload.track_ids, payload.destination)
         except RuntimeUnavailable as exc:
             raise _error("engine_unavailable", str(exc), 503) from exc
+        except OperationCancelled as exc:
+            raise _error("export_cancelled", str(exc), 409) from exc
         return ExportResponse(accepted=accepted, destination=payload.destination, message=f"Exported {accepted} track(s)")
+
+    @app.delete("/api/exports", response_model=QueueActionResponse)
+    def cancel_exports(_: Guard, core: Runtime) -> QueueActionResponse:
+        return QueueActionResponse(affected=core.cancel_exports())
 
     @app.websocket("/api/events")
     async def events_socket(websocket: WebSocket) -> None:
@@ -648,8 +695,13 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
         queue = event_hub.subscribe()
         try:
             while True:
-                await websocket.send_json(await queue.get())
-        except WebSocketDisconnect:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    # Heartbeat: lets the client tell a quiet socket from a dead one.
+                    event = {"type": "ping"}
+                await websocket.send_json(event)
+        except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
             event_hub.unsubscribe(queue)

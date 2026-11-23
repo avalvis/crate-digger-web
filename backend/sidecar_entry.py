@@ -107,9 +107,27 @@ def _run_internal_worker() -> bool:
         import ytmusicapi
 
         if packages.is_dir():
-            for module in (yt_dlp, yt_dlp_ejs, ytmusicapi):
+            import importlib
+            import importlib.metadata
+            import re
+            import ssl
+            from utils.managed_tools import STAGEABLE_MODULES
+
+            # Every staged distribution must import from the stage and report
+            # the staged version, so bundled copies can never shadow it.
+            for dist_info in packages.glob("*.dist-info"):
+                name, version = dist_info.name.removesuffix(".dist-info").rsplit("-", 1)
+                name = re.sub(r"[-_.]+", "-", name).lower()
+                module_name = STAGEABLE_MODULES.get(name)
+                if module_name is None:
+                    raise RuntimeError(f"Unexpected staged package {name}")
+                module = importlib.import_module(module_name)
                 if not Path(module.__file__).resolve().is_relative_to(packages):
-                    raise RuntimeError("Staged package was not loaded")
+                    raise RuntimeError(f"Staged package {name} was not loaded")
+                if importlib.metadata.version(name) != version:
+                    raise RuntimeError(f"Staged package {name} reports the wrong version")
+            import certifi
+            ssl.create_default_context(cafile=certifi.where())
         solver = importlib.resources.files("yt_dlp_ejs.yt.solver")
         if not solver.joinpath("core.min.js").read_bytes() or not solver.joinpath("lib.min.js").read_bytes():
             raise RuntimeError("YouTube challenge solver assets are missing")
@@ -170,15 +188,29 @@ def main() -> None:
     if _run_internal_worker():
         return
 
+    # Every child process (ffmpeg, demucs, …) now dies with the sidecar,
+    # even when it exits abruptly via os._exit or a crash.
+    from utils.proc import install_kill_on_close_job
+
+    install_kill_on_close_job()
+
+    import socket
+
     import uvicorn
     from cratedigger_api.app import app
 
-    uvicorn.run(
+    # Port 0 lets the OS choose a free port while we hold the socket, so no
+    # other process can take it between choosing and binding. The desktop
+    # shell reads the chosen port from the line printed below.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", int(os.environ.get("CRATEDIGGER_PORT", "8000"))))
+    sock.listen(128)
+    print(f"CRATEDIGGER_LISTENING port={sock.getsockname()[1]}", flush=True)
+    config = uvicorn.Config(
         app,
-        host="127.0.0.1",
-        port=int(os.environ.get("CRATEDIGGER_PORT", "8000")),
         log_level=os.environ.get("CRATEDIGGER_LOG_LEVEL", "info"),
     )
+    uvicorn.Server(config).run(sockets=[sock])
 
 
 if __name__ == "__main__":

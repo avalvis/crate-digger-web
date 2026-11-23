@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from 'radix-ui'
 import { Archive, Disc3, FolderSearch, ImageOff, Play, Save, Star, X } from 'lucide-react'
-import { api, mediaUrl } from '../lib/api'
+import { api, buildMediaUrl, mediaUrl, runtimeConfig } from '../lib/api'
 import { revealFile } from '../lib/desktop'
 import type { Track } from '../lib/types'
 import { usePlayerStore } from '../store/player'
+import { useShallow } from 'zustand/react/shallow'
 import { useToastStore } from '../store/toast'
 import { CrateAssignmentDialog } from './CrateAssignmentDialog'
 
@@ -14,15 +15,14 @@ export function formatTrackTime(seconds: number | null) {
 }
 
 export function TrackArtwork({ track, className = '' }: { track: Track; className?: string }) {
-  const artwork = useQuery({
-    queryKey: ['track-artwork-url', track.id, track.artwork_url],
-    queryFn: () => track.artwork_url ? mediaUrl(track.artwork_url) : Promise.resolve(null),
-    staleTime: Infinity,
-  })
+  // One shared query for the engine address; every row builds its URL from it
+  // instead of running its own query (hundreds per Vault page).
+  const runtime = useQuery({ queryKey: ['runtime-config'], queryFn: runtimeConfig, staleTime: Infinity })
+  const src = track.artwork_url && runtime.data ? buildMediaUrl(runtime.data, track.artwork_url) : null
   const [failed, setFailed] = useState(false)
-  useEffect(() => setFailed(false), [track.id, artwork.data])
-  if (!artwork.data || failed) return <div className={className}><span>{track.artist.slice(0, 2).toUpperCase()}</span>{failed && <ImageOff size={10} />}</div>
-  return <div className={className}><img src={artwork.data} alt={`${track.artist} — ${track.title} cover`} onError={() => setFailed(true)} /></div>
+  useEffect(() => setFailed(false), [track.id, src])
+  if (!src || failed) return <div className={className}><span>{track.artist.slice(0, 2).toUpperCase()}</span>{failed && <ImageOff size={10} />}</div>
+  return <div className={className}><img src={src} alt={`${track.artist} — ${track.title} cover`} loading="lazy" decoding="async" onError={() => setFailed(true)} /></div>
 }
 
 export async function revealTrack(trackId: number) {
@@ -46,7 +46,7 @@ export function TrackTable({ tracks, selected, onSelected, onOpen, showCrate = t
 
 export function TrackInspector({ trackId, open, onOpenChange }: { trackId: number | null; open: boolean; onOpenChange: (value: boolean) => void }) {
   const [rating, setRating] = useState(0); const [notes, setNotes] = useState(''); const [tags, setTags] = useState(''); const [assigning, setAssigning] = useState(false)
-  const toast = useToastStore((state) => state.show); const player = usePlayerStore(); const queryClient = useQueryClient()
+  const toast = useToastStore((state) => state.show); const player = usePlayerStore(useShallow((state) => ({ setTrack: state.setTrack, playing: state.playing, track: state.track }))); const queryClient = useQueryClient()
   const detail = useQuery({ queryKey: ['track', trackId], queryFn: () => api.track(trackId!), enabled: trackId !== null && open })
   const track = detail.data || null
   useEffect(() => { if (track) { setRating(track.rating || 0); setNotes(track.notes || ''); setTags(track.tags.join(', ')) } }, [track])

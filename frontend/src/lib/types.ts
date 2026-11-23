@@ -152,7 +152,7 @@ export interface MediaTool {
   name: string
   installed_version: string | null
   latest_version: string | null
-  status: 'ready' | 'missing' | 'error' | 'update_available'
+  status: 'ready' | 'missing' | 'error' | 'update_available' | 'update_failed'
   update_supported: boolean
   optional: boolean
   detail: string

@@ -1,9 +1,9 @@
+# Runtime dependencies of the local API. Install requirements-dev.txt for
+# tests, and requirements-engine.txt for the full media engine.
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.34,<1.0
 pydantic>=2.10,<3.0
 keyring>=25.0
 numpy>=1.26,<3.0
-pytest>=8.3,<9.0
-httpx>=0.28,<1.0
 packaging>=24.0
 requests>=2.32.2,<3

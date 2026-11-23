@@ -17,11 +17,31 @@ from core.tool_manager import ToolManager
 from .events import EventHub
 
 
-APP_VERSION = "0.2.5"
+def _app_version() -> str:
+    """The desktop shell passes its version; development reads tauri.conf.json."""
+    if os.environ.get("CRATEDIGGER_APP_VERSION"):
+        return os.environ["CRATEDIGGER_APP_VERSION"]
+    try:
+        import json
+        config = Path(__file__).resolve().parents[2] / "src-tauri" / "tauri.conf.json"
+        return json.loads(config.read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        return "dev"
+
+
+APP_VERSION = _app_version()
 
 
 class RuntimeUnavailable(RuntimeError):
     pass
+
+
+class JobConflict(RuntimeError):
+    """The request conflicts with the queue's current state."""
+
+
+class OperationCancelled(RuntimeError):
+    """The user cancelled a long-running request."""
 
 
 def configure_file_logging(data_dir: Path) -> None:
@@ -108,6 +128,8 @@ class EngineRuntime:
         configure_file_logging(self.data_dir)
         self.log = logger or logging.getLogger("cratedigger.web")
         self.events = event_hub
+        self._dig_cancels: set[threading.Event] = set()
+        self._export_cancels: set[threading.Event] = set()
         self.config = ConfigManager(self.data_dir / "config.json", logger=self.log.getChild("config"))
         self.config.load()
         self.db = VaultDatabase(self.data_dir / "vault.db", logger=self.log.getChild("db"))
@@ -125,7 +147,9 @@ class EngineRuntime:
         self._mpc_manager: Any = None
         self._media_error: str | None = None
         self._preview_paths: dict[str, Path] = {}
-        self.tools = ToolManager(self.data_dir)
+        self.tools = ToolManager(
+            self.data_dir, channel=lambda: self.config.snapshot().config.downloader.update_channel,
+        )
 
     @property
     def engine_ready(self) -> bool:
@@ -284,12 +308,21 @@ class EngineRuntime:
     def enqueue(self, request: Any) -> int:
         self.ensure_media_engine()
         from core.pipeline import PipelineRequest
+        from core.queue_manager import QueueManagerError
 
-        return int(self._queue.enqueue(PipelineRequest(**request)))
+        try:
+            return int(self._queue.enqueue(PipelineRequest(**request)))
+        except QueueManagerError as exc:
+            raise JobConflict(str(exc)) from exc
 
     def retry_job(self, job_id: int) -> int:
         self.ensure_media_engine()
-        return int(self._queue.retry(job_id))
+        from core.queue_manager import QueueManagerError
+
+        try:
+            return int(self._queue.retry(job_id))
+        except QueueManagerError as exc:
+            raise JobConflict(str(exc)) from exc
 
     def cancel_all_jobs(self) -> int:
         self.ensure_media_engine()
@@ -326,12 +359,12 @@ class EngineRuntime:
     def cancel_job(self, job_id: int) -> bool:
         if self._queue is not None:
             return bool(self._queue.cancel(job_id))
-        jobs = self.db.list_queue_jobs()
-        pending = next((job for job in jobs if job.id == job_id and job.status == "pending"), None)
-        if pending:
-            self.db.update_queue_job(job_id, status="cancelled", error_message="Cancelled", completed_at="cancelled")
-            return True
-        return False
+        from datetime import datetime, timezone
+
+        return self.db.update_queue_job(
+            job_id, status="cancelled", error_message="Cancelled", status_message="Cancelled",
+            completed_at=datetime.now(timezone.utc).isoformat(), expected_status=("pending",),
+        )
 
     def discover(self, values: dict[str, Any]) -> tuple[list[dict[str, Any]], bool, str | None]:
         engine = self.ensure_discovery()
@@ -339,11 +372,35 @@ class EngineRuntime:
             count = int(values.pop("count", 8))
             items = [dict(item) for item in DEMO_SUGGESTIONS]
             return (items[:count], True, "Add a Discogs token in Settings to dig live records.")
-        from core.discovery import DiscoveryFilters
+        from core.discovery import DiscoveryCancelledError, DiscoveryFilters
 
         count = int(values.pop("count", 8))
-        suggestions = engine.dig_many(DiscoveryFilters(**values), count=count)
+        cancel = threading.Event()
+        with self._lock:
+            self._dig_cancels.add(cancel)
+
+        def progress(message: str) -> None:
+            # Live dig status for the UI; digs can take a while on slow APIs.
+            self.events.publish({"type": "discovery_progress", "message": message})
+
+        try:
+            suggestions = engine.dig_many(
+                DiscoveryFilters(**values), count=count, cancel_event=cancel, progress=progress,
+            )
+        except DiscoveryCancelledError as exc:
+            raise OperationCancelled("Dig cancelled") from exc
+        finally:
+            with self._lock:
+                self._dig_cancels.discard(cancel)
         return ([dataclasses.asdict(item) for item in suggestions], False, None)
+
+    def cancel_discovery(self) -> int:
+        """Cancel every dig in progress; returns how many were running."""
+        with self._lock:
+            cancels = list(self._dig_cancels)
+        for cancel in cancels:
+            cancel.set()
+        return len(cancels)
 
     @staticmethod
     def _discovery_suggestion(values: dict[str, Any]) -> Any:
@@ -531,27 +588,78 @@ class EngineRuntime:
             return json.loads(cache_file.read_text(encoding="utf-8"))
         self.ensure_media_engine()
         track = self.db.get_track(track_id)
-        data = self._preview.load_file(Path(track.file_path))
+        peaks, duration = self._preview.peaks_for_file(Path(track.file_path))
         payload = {
-            "peaks": [round(float(value), 5) for value in data.peaks],
-            "duration_seconds": data.duration_seconds,
+            "peaks": [round(float(value), 5) for value in peaks],
+            "duration_seconds": duration,
         }
         import json
 
-        cache_file.write_text(json.dumps(payload), encoding="utf-8")
+        # Write-then-rename so a concurrent reader never sees half a file.
+        partial = cache_file.with_name(f"{cache_file.name}.{threading.get_ident()}.partial")
+        partial.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(partial, cache_file)
         return payload
 
     def export_tracks(self, track_ids: list[int], destination: str) -> int:
         self.ensure_media_engine()
+        from core.exporter import ExportCancelledError
+
         sources = [Path(self.db.get_track(track_id).file_path) for track_id in track_ids]
-        result = self._exporter.export_batch(sources, Path(destination).expanduser())
+        cancel = threading.Event()
+        with self._lock:
+            self._export_cancels.add(cancel)
+
+        def progress(update: Any) -> None:
+            self.events.publish({
+                "type": "export_progress", "message": update.message,
+                "percent": update.overall_percent, "current": update.current_index, "total": update.total_files,
+            })
+
+        try:
+            result = self._exporter.export_batch(
+                sources, Path(destination).expanduser(), progress_callback=progress, cancel_event=cancel,
+            )
+        except ExportCancelledError as exc:
+            raise OperationCancelled("Export cancelled") from exc
+        finally:
+            with self._lock:
+                self._export_cancels.discard(cancel)
         return len(result.exported)
+
+    def cancel_exports(self) -> int:
+        with self._lock:
+            cancels = list(self._export_cancels)
+        for cancel in cancels:
+            cancel.set()
+        return len(cancels)
 
     def update_config(self, section: str, values: dict[str, Any]) -> None:
         updater = getattr(self.config, f"update_{section}")
-        updater(**values)
+        snapshot = updater(**values)
         if section == "discovery":
             self._discovery = None
+        try:
+            self._apply_live_config(snapshot.config)
+        except Exception:
+            # The setting is saved and applies on next launch regardless.
+            self.log.warning("Could not apply %s settings to the running engine", section, exc_info=True)
+
+    def _apply_live_config(self, config: Any) -> None:
+        """Push saved settings into the running engine (no restart needed)."""
+        general, export = config.general, config.export
+        if self._pipeline is not None:
+            self._pipeline.update_folder_scheme(general.vault_folder_scheme)
+            self._pipeline.update_paths(
+                vault_root=Path(general.vault_root).expanduser(),
+                staging_root=Path(general.staging_root).expanduser(),
+            )
+        if self._queue is not None:
+            self._queue.resize(general.concurrent_workers)
+        if self._exporter is not None:
+            self._exporter.update_format(sample_rate=export.sample_rate, bit_depth=export.bit_depth)
+        if self._mpc_manager is not None:
+            self._mpc_manager.set_max_workers(general.mpc_export_max_concurrent)
 
     def set_discogs_token(self, value: str | None) -> None:
         self.config.set_discogs_token(value)

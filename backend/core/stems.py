@@ -30,7 +30,6 @@ import os
 import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -39,6 +38,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Union
+from utils.proc import terminate_tree, wait_or_kill
 
 # ─── Models ──────────────────────────────────────────────────────────
 
@@ -412,18 +412,18 @@ class StemSeparator:
                     "Model mdx_extra_q requires diffq; using mdx_extra instead",
                 )
 
-        # TorchCodec is optional: the Demucs worker patches Torchaudio I/O.
-        ok, details = self._python_module_check("torchcodec")
-        if not ok:
-            self._log.debug(
-                "torchcodec not available (%s); using Crate Digger's FFmpeg adapter.",
-                details,
-            )
-
+        # TorchCodec is not probed: the Demucs worker always patches Torchaudio
+        # I/O, and probing launched the whole engine just to log the answer.
         return active_model
 
     def _python_module_check(self, module_name: str) -> tuple[bool, str]:
-        """Check if a module can be imported by the demucs interpreter."""
+        """Check (once per session) if the demucs interpreter can import a module."""
+        cache = self.__dict__.setdefault("_module_checks", {})
+        if module_name not in cache:
+            cache[module_name] = self._probe_module(module_name)
+        return cache[module_name]
+
+    def _probe_module(self, module_name: str) -> tuple[bool, str]:
         command = (
             [self._python, "--internal-import-probe", module_name]
             if self._frozen_worker
@@ -630,31 +630,18 @@ class StemSeparator:
                     )
 
         drain_thread.join(timeout=2.0)
-        rc = proc.wait()
+        try:
+            # Output has ended, so the process is exiting; never hang on it.
+            rc = wait_or_kill(proc, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise StemSeparationFailedError("demucs stopped responding after finishing its output") from exc
         if rc != 0:
             tail = "\n".join(output_lines[-30:]) if output_lines else "(no output)"
             raise StemSeparationFailedError(f"demucs exited with code {rc}.\n{tail}")
 
     def _terminate_process(self, proc: subprocess.Popen) -> None:
-        """Graceful terminate → 3s grace → kill. Cross-platform."""
-        try:
-            if sys.platform == "win32":
-                # With CREATE_NEW_PROCESS_GROUP set at spawn time,
-                # CTRL_BREAK_EVENT is the cooperative shutdown signal.
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                proc.terminate()
-        except (ProcessLookupError, OSError):
-            return
-
-        try:
-            proc.wait(timeout=3.0)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=2.0)
-            except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
-                pass
+        """Stop the child and its descendants (the frozen build nests them)."""
+        terminate_tree(proc)
 
     @staticmethod
     def _subprocess_platform_kwargs(

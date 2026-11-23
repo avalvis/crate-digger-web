@@ -63,6 +63,7 @@ class PreviewPrefetchService:
 
     _DECODED_LRU_MAX = 8
     _JOB_TIMEOUT_S = 90.0
+    _ENTRIES_MAX = 300
 
     def __init__(
         self,
@@ -187,6 +188,7 @@ class PreviewPrefetchService:
                         message="Queued",
                     ),
                 )
+            self._prune_entries(set(ids))
         for event in pending:
             self._publish(event)
         self._pump()
@@ -278,7 +280,7 @@ class PreviewPrefetchService:
             if data is not None:
                 return data
             state = self.get_state(vid)
-            if state == PrefetchState.FAILED:
+            if state in (PrefetchState.FAILED, PrefetchState.CANCELLED):
                 return None
             if state == PrefetchState.READY:
                 return self.get_decoded(vid)
@@ -435,7 +437,7 @@ class PreviewPrefetchService:
         entry = self._entries.get(video_id)
         if entry is None or entry.cancel_event.is_set():
             return
-        entry.started_at = time.monotonic()
+        self._set(entry, started_at=time.monotonic())
         last_progress_pub = 0.0
 
         def on_progress(pct: float, msg: str) -> None:
@@ -451,9 +453,7 @@ class PreviewPrefetchService:
                 if pct < 65.0
                 else PrefetchState.DECODING
             )
-            entry.state = state
-            entry.message = msg
-            entry.percent = pct
+            self._set(entry, state=state, message=msg, percent=pct)
             self._publish(
                 PrefetchEvent(
                     PrefetchEventType.PROGRESS,
@@ -465,8 +465,7 @@ class PreviewPrefetchService:
             )
 
         try:
-            entry.state = PrefetchState.DOWNLOADING
-            entry.message = "Warming preview…"
+            self._set(entry, state=PrefetchState.DOWNLOADING, message="Warming preview…")
             self._publish(
                 PrefetchEvent(
                     PrefetchEventType.STATE_CHANGED,
@@ -486,7 +485,7 @@ class PreviewPrefetchService:
                 )
 
             if entry.cancel_event.is_set():
-                entry.state = PrefetchState.CANCELLED
+                self._set(entry, state=PrefetchState.CANCELLED)
                 return
 
             if self._keep_decoded:
@@ -501,9 +500,8 @@ class PreviewPrefetchService:
                     while len(self._decoded_lru) > self._DECODED_LRU_MAX:
                         self._decoded_lru.popitem(last=False)
 
-            entry.state = PrefetchState.READY
-            entry.message = "Ready"
-            entry.percent = 100.0
+            if not self._set(entry, state=PrefetchState.READY, message="Ready", percent=100.0):
+                return
             data = self.get_decoded(video_id)
             self._publish(
                 PrefetchEvent(
@@ -517,7 +515,7 @@ class PreviewPrefetchService:
             )
             self._emit_drain_check()
         except PreviewCancelledError:
-            entry.state = PrefetchState.CANCELLED
+            self._set(entry, state=PrefetchState.CANCELLED)
             self._publish(
                 PrefetchEvent(
                     PrefetchEventType.STATE_CHANGED,
@@ -527,8 +525,7 @@ class PreviewPrefetchService:
             )
             self._emit_drain_check()
         except PreviewError as e:
-            entry.state = PrefetchState.FAILED
-            entry.error_message = str(e)
+            self._set(entry, state=PrefetchState.FAILED, error_message=str(e))
             self._publish(
                 PrefetchEvent(
                     PrefetchEventType.STATE_CHANGED,
@@ -541,8 +538,7 @@ class PreviewPrefetchService:
             self._log.warning("Prefetch failed for %s: %s", video_id, e)
             self._emit_drain_check()
         except Exception as e:  # noqa: BLE001
-            entry.state = PrefetchState.FAILED
-            entry.error_message = str(e)
+            self._set(entry, state=PrefetchState.FAILED, error_message=str(e))
             self._publish(
                 PrefetchEvent(
                     PrefetchEventType.STATE_CHANGED,
@@ -553,6 +549,26 @@ class PreviewPrefetchService:
             )
             self._log.exception("Unexpected prefetch failure for %s", video_id)
             self._emit_drain_check()
+
+    def _set(self, entry: _PrefetchEntry, **fields: object) -> bool:
+        """Update an entry atomically; a cancelled entry stays cancelled."""
+        with self._lock:
+            state = fields.get("state")
+            if entry.cancel_event.is_set() and state is not None and state != PrefetchState.CANCELLED:
+                return False
+            for name, value in fields.items():
+                setattr(entry, name, value)
+            return True
+
+    def _prune_entries(self, keep: set[str]) -> None:
+        """Forget finished items outside the current reel (caller holds lock)."""
+        if len(self._entries) <= self._ENTRIES_MAX:
+            return
+        terminal = (PrefetchState.READY, PrefetchState.FAILED, PrefetchState.CANCELLED)
+        for vid in [v for v, e in self._entries.items() if v not in keep and e.state in terminal]:
+            if len(self._entries) <= self._ENTRIES_MAX:
+                break
+            del self._entries[vid]
 
     def _ensure_entry(self, video_id: str) -> _PrefetchEntry:
         entry = self._entries.get(video_id)

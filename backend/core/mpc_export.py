@@ -34,6 +34,7 @@ from core.exporter import ExportError, MPCExporter
 from core.preview import PreviewError, PreviewService
 from core.stems import StemModel, StemSeparationError, StemSeparator
 from utils.paths import sanitize_filename_component
+from utils.proc import no_window_kwargs
 
 
 # MPC Workflow is a quick sample-dig path — use the single-model demucs
@@ -374,7 +375,8 @@ def _probe_duration(ffmpeg_path: str, source: Path) -> Optional[float]:
     ]
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=15,
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+            **no_window_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -413,7 +415,7 @@ def _maybe_trim_audio(
         str(trimmed),
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, **no_window_kwargs())
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         raise MpcSampleExportError(f"Could not trim audio: {e}") from e
 
@@ -429,7 +431,7 @@ def _maybe_trim_audio(
             str(trimmed),
         ]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, **no_window_kwargs())
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             raise MpcSampleExportError(f"Could not trim audio: {e}") from e
         if res.returncode != 0 or not trimmed.exists():

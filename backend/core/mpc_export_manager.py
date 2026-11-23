@@ -17,7 +17,7 @@ import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from core.discovery import DiscoverySuggestion
 from core.exporter import MPCExporter
@@ -286,8 +286,7 @@ class MpcExportManager:
             job = self._jobs.get(job_id)
             if job is None or job.cancel_event.is_set():
                 return
-            job.state = "running"
-            job.message = "Starting…"
+            self._update(job, state="running", message="Starting…")
             suggestion = job.suggestion
             mode = job.mode
 
@@ -305,8 +304,7 @@ class MpcExportManager:
         def on_progress(label: str, pct: float) -> None:
             if job.cancel_event.is_set():
                 return
-            job.message = label
-            job.percent = pct
+            self._update(job, message=label, percent=pct)
             self._publish(
                 MpcExportEvent(
                     MpcExportEventType.PROGRESS,
@@ -336,10 +334,7 @@ class MpcExportManager:
                 cancel_event=job.cancel_event,
                 logger=self._log,
             )
-            job.state = "completed"
-            job.percent = 100.0
-            job.message = "Complete"
-            job.track_dir = str(result.track_dir)
+            self._update(job, state="completed", percent=100.0, message="Complete", track_dir=str(result.track_dir))
             self._publish(
                 MpcExportEvent(
                     MpcExportEventType.COMPLETED,
@@ -353,7 +348,7 @@ class MpcExportManager:
                 ),
             )
         except MpcSampleExportCancelledError:
-            job.state = "cancelled"
+            self._update(job, state="cancelled")
             self._publish(
                 MpcExportEvent(
                     MpcExportEventType.CANCELLED,
@@ -364,8 +359,7 @@ class MpcExportManager:
                 ),
             )
         except MpcSampleExportError as e:
-            job.state = "failed"
-            job.error_message = str(e)
+            self._update(job, state="failed", error_message=str(e))
             self._publish(
                 MpcExportEvent(
                     MpcExportEventType.FAILED,
@@ -379,8 +373,7 @@ class MpcExportManager:
             )
             self._log.warning("MPC export failed for %s: %s", job_id, e)
         except Exception as e:  # noqa: BLE001
-            job.state = "failed"
-            job.error_message = str(e)
+            self._update(job, state="failed", error_message=str(e))
             self._publish(
                 MpcExportEvent(
                     MpcExportEventType.FAILED,
@@ -394,6 +387,12 @@ class MpcExportManager:
             self._log.exception("Unexpected MPC export failure for %s", job_id)
         finally:
             self._maybe_emit_drained()
+
+    def _update(self, job: Any, **fields: object) -> None:
+        """Change job fields atomically with respect to snapshot readers."""
+        with self._lock:
+            for name, value in fields.items():
+                setattr(job, name, value)
 
     def _maybe_emit_drained(self) -> None:
         with self._lock:
@@ -412,16 +411,18 @@ class MpcExportManager:
     def _publish(self, event: MpcExportEvent) -> None:
         if event.type == MpcExportEventType.PROGRESS:
             now = time.monotonic()
-            last = self._progress_throttle.get(event.job_id, 0.0)
-            if now - last < self._PROGRESS_MIN_INTERVAL:
-                return
-            self._progress_throttle[event.job_id] = now
+            with self._lock:
+                last = self._progress_throttle.get(event.job_id, 0.0)
+                if now - last < self._PROGRESS_MIN_INTERVAL:
+                    return
+                self._progress_throttle[event.job_id] = now
         elif event.type in (
             MpcExportEventType.COMPLETED,
             MpcExportEventType.FAILED,
             MpcExportEventType.CANCELLED,
         ):
-            self._progress_throttle.pop(event.job_id, None)
+            with self._lock:
+                self._progress_throttle.pop(event.job_id, None)
 
         with self._lock:
             strong = list(self._subscribers)

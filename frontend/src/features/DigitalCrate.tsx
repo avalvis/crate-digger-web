@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { Dialog, DropdownMenu } from 'radix-ui'
 import {
   Check, Copy, Cpu, Disc3, FileAudio, FolderOpen, Grid2X2, Headphones, List, LoaderCircle, MoreVertical,
   Play, Plus, RefreshCw, RotateCcw, SlidersHorizontal, Waves, WandSparkles, X,
 } from 'lucide-react'
-import crateArtwork from '../../../assets/crate.png'
+import crateArtwork from '../assets/crate.webp'
 import { api } from '../lib/api'
 import { openExternal, openFolder } from '../lib/desktop'
 import type { MpcExportMode, MpcJob, PreviewPrefetchItem, Suggestion } from '../lib/types'
 import { useDigitalCrateStore } from '../store/digitalCrate'
 import { usePlayerStore } from '../store/player'
+import { useShallow } from 'zustand/react/shallow'
+import { SpectrumBars } from '../components/SpectrumBars'
 import { useToastStore } from '../store/toast'
 
 const profiles = [
@@ -168,7 +170,12 @@ export function DigitalCrate() {
   const navigate = useNavigate()
   const toast = useToastStore((state) => state.show)
   const queryClient = useQueryClient()
-  const player = usePlayerStore()
+  // Only the fields this page renders; the store also changes for things like
+  // volume that must not re-render the whole crate.
+  const player = usePlayerStore(useShallow((state) => ({
+    track: state.track, playlist: state.playlist, playing: state.playing, preparing: state.preparing,
+    playReel: state.playReel, replaceReelSource: state.replaceReelSource, clear: state.clear,
+  })))
   const heroRef = useRef<HTMLElement>(null)
   const previousTrackId = useRef<string | null>(player.track?.id || null)
   const [mpcItem, setMpcItem] = useState<Suggestion | null>(null)
@@ -223,7 +230,7 @@ export function DigitalCrate() {
     },
     onError: (error, item) => {
       crate.setRematching(item.discogs_master_id, false)
-      toast(error.message)
+      toast(error.message, 'error')
     },
   })
   const mpc = useMutation({
@@ -266,6 +273,10 @@ export function DigitalCrate() {
   const canonicalIndex = activeSuggestion ? player.playlist.findIndex((item) => item.id === player.track?.id) : -1
   const canonicalPosition = canonicalIndex >= 0 ? `${canonicalIndex + 1} OF ${player.playlist.length}` : null
   const digging = dig.isFetching
+  const digStatus = useDigitalCrateStore((state) => state.digStatus)
+  const digCancelled = (dig.error as { code?: string } | null)?.code === 'dig_cancelled'
+  useEffect(() => { if (!digging) useDigitalCrateStore.getState().setDigStatus(null) }, [digging])
+  const cancelDig = () => { api.cancelDig().catch((error) => toast(error.message, 'error')) }
   const needsDiscogs = config.isSuccess && !config.data.has_discogs_token
   const play = (item: Suggestion, mode: 'quick' | 'full' = 'quick') => {
     if (!item.youtube_video_id) return
@@ -288,7 +299,6 @@ export function DigitalCrate() {
     onMpc: openMpc,
     onCancelMpc: (job) => cancelMpc.mutate(job),
   })
-  const bars = activePlaying ? player.spectrum : Array.from({ length: 48 }, (_, index) => 0.12 + ((index * 17) % 42) / 100)
 
   useEffect(() => {
     const currentTrackId = player.track?.id || null
@@ -296,6 +306,10 @@ export function DigitalCrate() {
     previousTrackId.current = currentTrackId
     if (!changed || !activeSuggestion || !heroRef.current) return
     const frame = window.requestAnimationFrame(() => {
+      // Only bring the featured record into view when it is off-screen, so
+      // skipping tracks never yanks the page away from where you are.
+      const rect = heroRef.current?.getBoundingClientRect()
+      if (rect && rect.top >= 0 && rect.top < window.innerHeight * 0.6) return
       const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
       heroRef.current?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
     })
@@ -313,7 +327,8 @@ export function DigitalCrate() {
 
     {config.isError && <div className="error-state"><Disc3 size={18} /><span>The local engine did not return its settings.</span><button className="button button--outline" onClick={() => config.refetch()}>Reconnect</button></div>}
     {needsDiscogs && <div className="notice notice--action"><Disc3 size={18} /><span>This independent profile needs its own Discogs token before it can dig live gems.</span><button className="button button--outline" onClick={() => navigate('/settings')}>Open settings</button></div>}
-    {dig.isError && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={startDig}>Try again</button></div>}
+    {digging && <div className="dig-status" role="status"><LoaderCircle size={16} className="spin" /><span>{digStatus || 'Searching Discogs…'}</span><button className="button button--outline" onClick={cancelDig}>Cancel</button></div>}
+    {dig.isError && !digCancelled && <div className="error-state"><Disc3 size={18} /><span>{dig.error.message}</span><button className="button button--outline" onClick={startDig}>Try again</button></div>}
     {crate.message && <div className="notice"><Disc3 size={18} /><span>{crate.message}</span></div>}
 
     {!crate.items.length ? <section className={`dig-empty ${digging ? 'is-digging' : ''}`}>
@@ -324,7 +339,7 @@ export function DigitalCrate() {
         <button className="featured-dig__signal" disabled={!featured || player.preparing} onClick={() => featured && play(featured)} aria-label={`Preview ${featured!.artist} — ${featured!.title}`}>{player.preparing && activeSuggestion === featured ? <LoaderCircle size={25} className="spin" /> : <Play size={28} fill="currentColor" />}</button>
         <div className="featured-dig__copy"><span aria-live="polite">{activeSuggestion ? `NOW PLAYING${canonicalPosition ? ` · ${canonicalPosition}` : ''}` : `TOP PULL · ${profiles.find(([value]) => value === crate.profile)?.[1]}`}</span>
           <h2>{featured!.title}</h2><strong>{featured!.artist}</strong><SampleReasons item={featured!} />
-          <div className="hero-wave" aria-hidden="true">{bars.map((value, index) => <i key={index} style={{ transform: `scaleY(${Math.max(.08, value)})` }} />)}</div>
+          <SpectrumBars active={activePlaying} />
           <div className="featured-dig__actions"><button className="button button--primary" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!)}><Play size={14} /> {activeSuggestion === featured && player.playing ? 'Playing' : 'Preview'}</button><button className="button button--dark" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!, 'full')}><Waves size={14} /> Full track</button><button className="button button--dark" disabled={!featured!.youtube_url} onClick={() => queue(featured!)}><Plus size={14} /> Queue</button><SongActionMenu item={featured!} queueing={enqueue.isPending && enqueue.variables?.item === featured} {...songActions(featured!)} /></div>
         </div><RecordArtwork item={featured} index={featuredIndex} featured playing={activePlaying} />
       </section>

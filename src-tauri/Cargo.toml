@@ -1,6 +1,6 @@
 [package]
 name = "crate-digger"
-version = "0.2.5"
+version = "0.2.6"
 description = "Crate Digger desktop shell"
 authors = ["Crate Digger"]
 edition = "2021"
@@ -16,7 +16,6 @@ tauri-build = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 uuid = { version = "1", features = ["v4"] }

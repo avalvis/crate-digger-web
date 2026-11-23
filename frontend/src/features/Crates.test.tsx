@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { api } from '../lib/api'
 import { Crates } from './Crates'
@@ -10,7 +10,10 @@ vi.mock('../lib/api', () => ({ api: {
   crateOverview: vi.fn(), crateSuggestions: vi.fn(), tracks: vi.fn(), createCrate: vi.fn(),
   updateCrate: vi.fn(), deleteCrate: vi.fn(), assignToCrate: vi.fn(), crate: vi.fn(),
   removeFromCrate: vi.fn(), track: vi.fn(), patchTrack: vi.fn(), trackWaveform: vi.fn(),
-} , mediaUrl: vi.fn() }))
+} , mediaUrl: vi.fn(),
+  runtimeConfig: vi.fn().mockResolvedValue({ baseUrl: 'http://127.0.0.1:4983', token: 'session' }),
+  buildMediaUrl: (runtime: { baseUrl: string; token: string }, path: string) => `${runtime.baseUrl}${path}?token=${runtime.token}`,
+}))
 vi.mock('../lib/desktop', () => ({ revealFile: vi.fn() }))
 
 function renderCrates(path = '/crates') {

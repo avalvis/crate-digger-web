@@ -276,6 +276,10 @@ class QueueManager:
                     "Reset %d crash-stuck job(s) to 'failed' on startup.", reset,
                 )
 
+            requeued = self._requeue_pending()
+            if requeued:
+                self._log.info("Re-queued %d pending job(s) from the last session.", requeued)
+
             for i in range(self._num_workers):
                 t = threading.Thread(
                     target=self._worker_loop,
@@ -287,6 +291,30 @@ class QueueManager:
 
             self._running = True
             self._log.info("QueueManager started with %d worker(s)", self._num_workers)
+
+    def resize(self, num_workers: int) -> None:
+        """Change the worker count while running.
+
+        Extra workers start immediately; surplus workers retire after the
+        jobs already queued ahead of their stop signal.
+        """
+        num_workers = max(1, int(num_workers))
+        with self._state_lock:
+            diff = num_workers - self._num_workers
+            self._num_workers = num_workers
+            if not self._running or self._shutting_down or diff == 0:
+                return
+            for _ in range(diff):
+                t = threading.Thread(
+                    target=self._worker_loop,
+                    name=f"cratedigger-worker-{len(self._workers) + 1}",
+                    daemon=True,
+                )
+                t.start()
+                self._workers.append(t)
+            for _ in range(-diff):
+                self._work_q.put(_SHUTDOWN_SENTINEL)
+        self._log.info("Queue now uses %d worker(s)", num_workers)
 
     def shutdown(self, timeout: float = 10.0, cancel_in_flight: bool = True) -> None:
         """
@@ -334,6 +362,10 @@ class QueueManager:
                 raise QueueManagerError("QueueManager not started")
             if self._shutting_down:
                 raise QueueShutdownError("Cannot enqueue during shutdown")
+
+        existing = self._db.find_unfinished_job(request.source_url)
+        if existing is not None:
+            raise QueueManagerError(f"This track is already in the queue (job {existing}).")
 
         # Persist job row first so UI can render it immediately via events
         # and so crash-recovery catches jobs queued but never run.
@@ -406,12 +438,8 @@ class QueueManager:
                 display_name=original.display_name or "Vault track",
             )))
         else:
-            values = json.loads(original.request_payload or "{}")
-            values.setdefault("source_url", original.source_url)
-            values.setdefault("display_name", original.display_name)
+            values = _payload_values(original)
             values["origin"] = "retry"
-            if isinstance(values.get("stem_model"), str):
-                values["stem_model"] = StemModel(values["stem_model"])
             request = PipelineRequest(**values)
             retry_id = self._db.create_queue_job(QueueJobRecord(
                 source_url=request.source_url,
@@ -445,30 +473,64 @@ class QueueManager:
         the worker pulls it — we update the DB status immediately so
         the UI reflects the intent, and the worker skips it on pickup.
         """
+        if self._signal_active(job_id):
+            return True
+        # Not active, so it might be pending. Compare-and-set so a worker that
+        # is claiming the job at the same moment cannot overwrite the cancel.
+        if self._cancel_pending(job_id, "Cancelled before start"):
+            return True
+        # The worker may have claimed it between the two checks.
+        return self._signal_active(job_id)
+
+    def _signal_active(self, job_id: int) -> bool:
         with self._active_lock:
             job = self._active.get(job_id)
-        if job is not None:
-            job.cancel_event.set()
-            self._log.info("Cancel signal sent to in-flight job %d", job_id)
-            return True
+        if job is None:
+            return False
+        job.cancel_event.set()
+        self._log.info("Cancel signal sent to in-flight job %d", job_id)
+        return True
 
-        # Not active — might be pending. Mark in DB so worker skips on pickup.
-        rec = self._db.list_queue_jobs()
-        for r in rec:
-            if r.id == job_id and r.status == "pending":
+    def _cancel_pending(self, job_id: int, message: str) -> bool:
+        if not self._db.update_queue_job(
+            job_id, status="cancelled", completed_at=_utc_now_iso(),
+            error_message=message, status_message=message, expected_status=("pending",),
+        ):
+            return False
+        try:
+            source_url = self._db.get_queue_job(job_id).source_url
+        except Exception:
+            source_url = None
+        self._bus.publish(QueueEvent(
+            type=QueueEventType.JOB_CANCELLED, job_id=job_id,
+            source_url=source_url, message=message,
+        ))
+        return True
+
+    def _requeue_pending(self) -> int:
+        """Put jobs that were waiting when the app closed back in the queue."""
+        count = 0
+        for record in reversed(self._db.list_queue_jobs(statuses=("pending",), limit=10_000)):
+            if record.id is None:
+                continue
+            try:
+                if record.operation == "stems" and record.track_id is not None:
+                    request: Any = _StemRetryRequest(
+                        track_id=record.track_id, source_url=record.source_url,
+                        display_name=record.display_name or "Vault track",
+                    )
+                else:
+                    request = PipelineRequest(**_payload_values(record))
+            except Exception as exc:
+                self._log.warning("Could not restore pending job %d: %s", record.id, exc)
                 self._db.update_queue_job(
-                    job_id, status="cancelled",
-                    completed_at=_utc_now_iso(),
-                    error_message="Cancelled before start",
+                    record.id, status="failed", completed_at=_utc_now_iso(),
+                    error_message="Could not restore this job after restart", expected_status=("pending",),
                 )
-                self._bus.publish(QueueEvent(
-                    type=QueueEventType.JOB_CANCELLED,
-                    job_id=job_id,
-                    source_url=r.source_url,
-                    message="Cancelled before start",
-                ))
-                return True
-        return False
+                continue
+            self._work_q.put((record.id, request))
+            count += 1
+        return count
 
     def cancel_all(self) -> int:
         """
@@ -480,21 +542,9 @@ class QueueManager:
             for job in self._active.values():
                 job.cancel_event.set()
                 count += 1
-        for r in self._db.list_queue_jobs(statuses=("pending",)):
-            if r.id is None:
-                continue
-            self._db.update_queue_job(
-                r.id, status="cancelled",
-                completed_at=_utc_now_iso(),
-                error_message="Cancelled by 'Cancel All'",
-            )
-            self._bus.publish(QueueEvent(
-                type=QueueEventType.JOB_CANCELLED,
-                job_id=r.id,
-                source_url=r.source_url,
-                message="Cancelled",
-            ))
-            count += 1
+        for r in self._db.list_queue_jobs(statuses=("pending",), limit=10_000):
+            if r.id is not None and self._cancel_pending(r.id, "Cancelled by 'Cancel All'"):
+                count += 1
         return count
 
     # ── Public API: introspection ──
@@ -553,11 +603,6 @@ class QueueManager:
     def _run_job(self, job_id: int, request: PipelineRequest) -> None:
         """Run one pipeline job end-to-end. Catches all pipeline errors."""
         # Check if the job was cancelled while waiting in queue
-        db_rec = self._db_job_status(job_id)
-        if db_rec == "cancelled":
-            self._log.info("Skipping job %d — already cancelled", job_id)
-            return
-
         cancel_event = threading.Event()
         in_flight = _InFlightJob(
             job_id=job_id,
@@ -567,15 +612,21 @@ class QueueManager:
             started_at=time.monotonic(),
             current_stage=PipelineStage.DOWNLOADING.value,
         )
+        # Register before claiming so a concurrent cancel() always finds the
+        # job either pending in the DB or active here.
         with self._active_lock:
             self._active[job_id] = in_flight
 
         now = _utc_now_iso()
-        self._db.update_queue_job(
+        if not self._db.update_queue_job(
             job_id, status="downloading", started_at=now,
             progress_pct=0.0, stage_percent=0.0, current_stage="downloading",
-            status_message="Downloading audio",
-        )
+            status_message="Downloading audio", expected_status=("pending",),
+        ):
+            with self._active_lock:
+                self._active.pop(job_id, None)
+            self._log.info("Skipping job %d, no longer pending", job_id)
+            return
         self._bus.publish(QueueEvent(
             type=QueueEventType.JOB_STARTED,
             job_id=job_id,
@@ -586,6 +637,8 @@ class QueueManager:
 
         try:
             # Wire pipeline progress → DB + event bus.
+            last_write = {"at": 0.0, "stage": None}
+
             def on_progress(p: PipelineProgress) -> None:
                 # Capture display_name into in_flight as it becomes known,
                 # so subsequent events carry it without a DB round-trip.
@@ -594,6 +647,17 @@ class QueueManager:
                 elif p.display_name:
                     in_flight.display_name = p.display_name
                 in_flight.current_stage = p.stage.value
+
+                # Each update costs a DB write, a re-read and an event; cap
+                # them at ~4/s, but never drop a stage change or completion.
+                now = time.monotonic()
+                if (
+                    p.stage.value == last_write["stage"]
+                    and p.stage_percent < 100.0
+                    and now - last_write["at"] < _PROGRESS_INTERVAL_S
+                ):
+                    return
+                last_write["at"], last_write["stage"] = now, p.stage.value
 
                 # Persist progress for crash-recovery / UI state on boot.
                 self._db.update_queue_job(
@@ -724,8 +788,6 @@ class QueueManager:
                 self._active.pop(job_id, None)
 
     def _run_stem_job(self, job_id: int, request: _StemRetryRequest) -> None:
-        if self._db_job_status(job_id) == "cancelled":
-            return
         cancel_event = threading.Event()
         active = _InFlightJob(
             job_id=job_id,
@@ -737,13 +799,17 @@ class QueueManager:
         )
         with self._active_lock:
             self._active[job_id] = active
-        self._db.update_queue_job(
+        if not self._db.update_queue_job(
             job_id,
             status="separating_stems",
             started_at=_utc_now_iso(),
             current_stage=PipelineStage.SEPARATING_STEMS.value,
             status_message="Retrying stem separation",
-        )
+            expected_status=("pending",),
+        ):
+            with self._active_lock:
+                self._active.pop(job_id, None)
+            return
         self._bus.publish(QueueEvent(
             type=QueueEventType.JOB_STARTED,
             job_id=job_id,
@@ -839,6 +905,9 @@ class QueueManager:
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
+# Minimum seconds between persisted progress updates within one stage.
+_PROGRESS_INTERVAL_S = 0.25
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -862,3 +931,13 @@ def _stage_to_db_status(stage: PipelineStage) -> str:
         PipelineStage.CANCELLED:          "cancelled",
     }
     return mapping.get(stage, "pending")
+
+
+def _payload_values(record: QueueJobRecord) -> dict[str, Any]:
+    """Rebuild PipelineRequest keyword arguments from a stored job row."""
+    values = json.loads(record.request_payload or "{}")
+    values.setdefault("source_url", record.source_url)
+    values.setdefault("display_name", record.display_name)
+    if isinstance(values.get("stem_model"), str):
+        values["stem_model"] = StemModel(values["stem_model"])
+    return values

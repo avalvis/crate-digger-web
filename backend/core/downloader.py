@@ -37,6 +37,22 @@ from yt_dlp.utils import DownloadError, ExtractorError
 
 # ─── Public types ────────────────────────────────────────────────────
 
+
+# Messages yt-dlp uses for failures that a retry cannot fix.
+_PERMANENT_ERROR_MARKERS = (
+    "private video", "video unavailable", "this video has been removed",
+    "removed for violating", "account associated with this video has been terminated",
+    "not available in your country", "sign in to confirm your age", "members-only",
+    "join this channel", "this live event will begin", "unsupported url",
+    "is not a valid url", "copyright claim", "http error 404", "premieres in",
+)
+
+
+def is_permanent_download_error(error: Exception) -> bool:
+    """True for failures that will fail again however often they are retried."""
+    text = str(error).lower()
+    return any(marker in text for marker in _PERMANENT_ERROR_MARKERS)
+
 class DownloadStage(str, Enum):
     PREPARING = "preparing"
     DOWNLOADING = "downloading"
@@ -237,6 +253,9 @@ class Downloader:
                 if cancel_event is not None and cancel_event.is_set():
                     raise DownloadCancelledError("Cancelled by user.") from e
                 last_error = e
+                if is_permanent_download_error(e):
+                    # Retrying cannot help a private, removed or blocked video.
+                    break
                 if attempt < _DOWNLOAD_ATTEMPTS:
                     self._log.warning(
                         "yt-dlp attempt %d/%d failed for %s (%s); "
@@ -244,7 +263,12 @@ class Downloader:
                         attempt, _DOWNLOAD_ATTEMPTS, url, e,
                         _DOWNLOAD_RETRY_DELAY_SECONDS,
                     )
-                    time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
+                    # Wait, but wake immediately if the user cancels.
+                    if cancel_event is not None:
+                        if cancel_event.wait(_DOWNLOAD_RETRY_DELAY_SECONDS):
+                            raise DownloadCancelledError("Cancelled by user.") from e
+                    else:
+                        time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
             except Exception as e:           # defensive: never leak raw tracebacks
                 self._log.exception("Unexpected downloader failure for %s", url)
                 raise ExtractionFailedError(f"Unexpected error: {e}") from e

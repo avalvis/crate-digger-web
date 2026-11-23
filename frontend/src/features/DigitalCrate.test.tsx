@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
 import { api } from '../lib/api'
@@ -142,9 +142,12 @@ describe('DigitalCrate startup', () => {
     expect(screen.getByRole('region', { name: 'Played this session' })).toBeInTheDocument()
   })
 
-  it('scrolls to the hero for a new crate selection but not for pause or resume', async () => {
+  it('scrolls an off-screen hero into view for a new selection, but not for pause or resume', async () => {
     vi.mocked(api.config).mockResolvedValue(config(true))
     const scrollIntoView = vi.fn()
+    // The page is scrolled down: the hero sits above the viewport.
+    let heroTop = -600
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ top: heroTop, bottom: heroTop + 400 }) as DOMRect)
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { callback(0); return 1 })
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
@@ -161,6 +164,13 @@ describe('DigitalCrate startup', () => {
 
     act(() => usePlayerStore.getState().selectRelative(-1))
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2))
+
+    // Already looking at the hero: skipping tracks must not move the page.
+    heroTop = 120
+    act(() => usePlayerStore.getState().selectRelative(1))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockRestore()
   })
 
   it('asks for a Vault format before queueing a Digital Crate track', async () => {
@@ -200,5 +210,33 @@ describe('DigitalCrate startup', () => {
     await waitFor(() => expect(api.enqueue).toHaveBeenCalledWith(expect.objectContaining({
       output_format: 'wav', enable_stems: true,
     })))
+  })
+})
+
+describe('DigitalCrate rendering cost', () => {
+  it('does not re-render for analyser ticks or unrelated player changes', async () => {
+    const { Profiler } = await import('react')
+    const { useSpectrumStore } = await import('../store/spectrum')
+    useDigitalCrateStore.setState({
+      items: [], message: null, demo: false, digRun: 0, appliedRun: 0, previewStates: {},
+      rejectedSources: {}, lockedSources: {}, rematching: {}, mpcJobs: {}, playedVideoIds: [], listenedSeconds: {},
+    })
+    usePlayerStore.getState().clear()
+    vi.mocked(api.config).mockResolvedValue(config(true))
+    let commits = 0
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter><Profiler id="crate" onRender={() => { commits += 1 }}><DigitalCrate /></Profiler></MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText('Your crate is empty')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Dig for gems/ }).length).toBeGreaterThan(0))
+    const settled = commits
+    act(() => {
+      for (let tick = 0; tick < 20; tick += 1) useSpectrumStore.getState().setValues(Array.from({ length: 48 }, () => Math.random()))
+      usePlayerStore.getState().setVolume(0.4)
+    })
+    expect(commits).toBe(settled)
   })
 })

@@ -58,6 +58,8 @@ def load_with_ffmpeg(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        # A full track decodes in seconds; a hang here would stall stems forever.
+        timeout=600,
         **_subprocess_platform_kwargs(),
     )
     if completed.returncode != 0:

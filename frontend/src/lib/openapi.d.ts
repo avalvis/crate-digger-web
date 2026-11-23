@@ -375,7 +375,8 @@ export interface paths {
         put?: never;
         /** Dig */
         post: operations["dig_api_discovery_dig_post"];
-        delete?: never;
+        /** Cancel Dig */
+        delete: operations["cancel_dig_api_discovery_dig_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -620,7 +621,8 @@ export interface paths {
         put?: never;
         /** Export */
         post: operations["export_api_exports_post"];
-        delete?: never;
+        /** Cancel Exports */
+        delete: operations["cancel_exports_api_exports_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2220,6 +2222,40 @@ export interface operations {
             };
         };
     };
+    cancel_dig_api_discovery_dig_delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rematch_discovery_api_discovery_rematch_post: {
         parameters: {
             query?: {
@@ -2981,6 +3017,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_exports_api_exports_delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueActionResponse"];
                 };
             };
             /** @description Validation Error */

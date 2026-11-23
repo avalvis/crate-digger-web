@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -91,6 +92,11 @@ _TITLE_NOISE_SUFFIX_RE = re.compile(
 
 # ─── Public types ────────────────────────────────────────────────────
 
+
+# Windows MAX_PATH is 260 including the terminator; leave room for stems/
+# sub-files beneath the track folder.
+_MAX_FILE_PATH = 250
+_MAX_DIR_PATH = 200
 
 class PipelineStage(str, Enum):
     PENDING = "pending"
@@ -236,12 +242,30 @@ class IngestionPipeline:
 
         self._vault_root.mkdir(parents=True, exist_ok=True)
         self._staging_root.mkdir(parents=True, exist_ok=True)
+        self._sweep_stale_staging()
+
+    def _sweep_stale_staging(self) -> None:
+        """Remove job folders left behind by a crash or forced exit.
+
+        The pipeline is built before any job runs, so nothing here is in use.
+        """
+        for leftover in self._staging_root.glob("job_*"):
+            if leftover.is_dir():
+                shutil.rmtree(leftover, ignore_errors=True)
 
     # ── Public API ──
 
     def update_ai_enricher(self, enricher: Optional[_AiEnricher]) -> None:
         """Called by Settings when the DeepSeek key is saved or cleared."""
         self._ai_enricher = enricher
+
+    def update_paths(self, *, vault_root: Path, staging_root: Path) -> None:
+        """Point new jobs at different folders (running jobs keep theirs)."""
+        vault_root, staging_root = Path(vault_root), Path(staging_root)
+        vault_root.mkdir(parents=True, exist_ok=True)
+        staging_root.mkdir(parents=True, exist_ok=True)
+        self._vault_root = vault_root
+        self._staging_root = staging_root
 
     def update_folder_scheme(self, folder_scheme: str) -> None:
         """Apply a Settings folder-layout change to subsequent relocations."""
@@ -262,8 +286,12 @@ class IngestionPipeline:
         started = time.monotonic()
 
         # Per-run staging dir. Cleaned up on completion/failure.
-        job_staging = self._staging_root / f"job_{int(time.time() * 1000)}"
+        # A random suffix keeps concurrent workers from sharing a folder.
+        job_staging = self._staging_root / f"job_{uuid.uuid4().hex}"
         job_staging.mkdir(parents=True, exist_ok=True)
+        # Set once files are in the vault; cleared once the DB row exists.
+        # Anything left set on failure is rolled back so no orphans remain.
+        unindexed_dir: Optional[Path] = None
 
         try:
             self._check_cancel(cancel_event)
@@ -341,6 +369,7 @@ class IngestionPipeline:
                 title=resolved_title,
                 artwork=artwork_bytes,
             )
+            unindexed_dir = track_dir
             progress.emit(100.0, f"Filed: {final_audio_path.parent.name}")
 
             # ── 6. INDEX ──
@@ -355,6 +384,7 @@ class IngestionPipeline:
                 resolved_title,
                 artwork_bytes is not None,
             )
+            unindexed_dir = None
             progress.emit(100.0, f"Indexed (id={track_id})")
 
             # ── 7. STEMS (optional) ──
@@ -430,6 +460,9 @@ class IngestionPipeline:
             self._log.exception("Pipeline failed for %s", request.source_url)
             raise PipelineError(str(e)) from e
         finally:
+            if unindexed_dir is not None:
+                self._log.warning("Removing unindexed vault folder %s", unindexed_dir)
+                shutil.rmtree(unindexed_dir, ignore_errors=True)
             shutil.rmtree(job_staging, ignore_errors=True)
 
     def separate_existing_track(
@@ -774,21 +807,37 @@ class IngestionPipeline:
             scheme=self._folder_scheme,
         )
 
-        # Collision avoidance at the directory level
+        # Keep the folder short enough that the file inside it fits within
+        # Windows' 260-character path limit.
+        if len(str(track_dir)) > _MAX_DIR_PATH:
+            room = max(24, len(track_dir.name) - (len(str(track_dir)) - _MAX_DIR_PATH))
+            track_dir = track_dir.with_name(sanitize_filename_component(track_dir.name, max_length=room))
+
+        # Reserve the folder atomically: mkdir fails if another worker (or an
+        # earlier track) already owns it, so two jobs never share a folder.
+        try:
+            track_dir.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise PipelineError(f"Could not create vault folder: {e}") from e
         base_dir = track_dir
         n = 2
-        while track_dir.exists() and any(track_dir.iterdir()):
-            track_dir = base_dir.with_name(f"{base_dir.name} ({n})")
-            n += 1
-            if n > 999:
-                raise PipelineError(f"Too many collisions at {base_dir.parent}")
-
-        track_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                track_dir.mkdir()
+                break
+            except FileExistsError:
+                track_dir = base_dir.with_name(f"{base_dir.name} ({n})")
+                n += 1
+                if n > 999:
+                    raise PipelineError(f"Too many collisions at {base_dir.parent}")
+            except OSError as e:
+                raise PipelineError(f"Could not create vault folder: {e}") from e
 
         # Final filename mirrors the track_dir name for easy browsing
+        room = _MAX_FILE_PATH - len(str(track_dir)) - 1 - len(src.suffix)
         filename = sanitize_filename_component(
             f"{artist} - {title}",
-            max_length=180,
+            max_length=max(24, min(180, room)),
         )
         dest = track_dir / f"{filename}{src.suffix.lower()}"
 

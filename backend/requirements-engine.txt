@@ -18,13 +18,6 @@ librosa>=0.10.2,<0.12
 numpy>=1.26,<3.0
 scipy>=1.13
 soundfile>=0.12.1
-audioread>=3.0.1
-
-# ─── Audio Preview Playback ──────────────────────────────────────────
-# In-app waveform preview player. sounddevice bundles PortAudio wheels
-# on Windows/macOS; plays decoded PCM straight from a numpy buffer with
-# frame-accurate seeking for the discovery + vault preview scrubbers.
-sounddevice>=0.4.6
 
 # ─── Stem Separation ─────────────────────────────────────────────────
 # Pinned exact stack for reproducible Python 3.14 runtime behavior.
@@ -40,8 +33,6 @@ demucs==4.0.1
 
 # ─── Persistence & Config ────────────────────────────────────────────
 # sqlite3 is stdlib; no dependency needed
-pydantic>=2.8                  # Used by utils/config.py for schema validation
-keyring>=25.0                  # OS credential store for Discogs/DeepSeek keys
 
 # ─── Packaging (dev only, not required at runtime) ───────────────────
 pyinstaller>=6.10 ; extra == "build"

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+from utils.proc import no_window_kwargs
 
 # Formats that soundfile (libsndfile) cannot decode; we pipe these through
 # ffmpeg to raw PCM before handing to librosa. Without this, librosa falls
@@ -550,6 +551,7 @@ class AudioAnalyzer:
                     cmd,
                     capture_output=True,
                     timeout=120,
+                    **no_window_kwargs(),
                 )
                 if result.returncode == 0 and result.stdout:
                     y = np.frombuffer(result.stdout, dtype=np.float32).copy()

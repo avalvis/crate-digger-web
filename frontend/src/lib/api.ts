@@ -20,7 +20,7 @@ import type {
   TrackLocation,
 } from './types'
 
-interface RuntimeConfig { baseUrl: string; token: string }
+export interface RuntimeConfig { baseUrl: string; token: string }
 
 let runtimePromise: Promise<RuntimeConfig> | undefined
 let startupPromise: Promise<void> | undefined
@@ -30,12 +30,25 @@ const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeo
 async function loadRuntime(): Promise<RuntimeConfig> {
   if (window.__TAURI_INTERNALS__) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<RuntimeConfig>('api_config')
+    // The engine reports its port once it is listening; wait for it.
+    const deadline = Date.now() + 120_000
+    for (;;) {
+      const config = await invoke<RuntimeConfig>('api_config')
+      if (config.baseUrl) return config
+      if (Date.now() > deadline) throw new Error('Crate Digger could not finish starting. Close and reopen the app. Details are in crate-digger-startup.log in the app data folder.')
+      await delay(250)
+    }
   }
   return {
     baseUrl: import.meta.env.VITE_API_BASE_URL || '',
     token: import.meta.env.VITE_API_TOKEN || 'cratedigger-local',
   }
+}
+
+/** Forget the cached engine address, e.g. after the engine restarted on a new port. */
+export function resetRuntime() {
+  runtimePromise = undefined
+  startupPromise = undefined
 }
 
 export function runtimeConfig() {
@@ -109,16 +122,27 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 90_0
     if (controller.signal.aborted) {
       throw new Error('The local engine stopped responding. Nothing was changed; try the request again.')
     }
+    if (error instanceof TypeError) {
+      // fetch() rejects with TypeError when the engine is unreachable.
+      throw Object.assign(
+        new Error(`The audio engine is unreachable (${error.message}). It may be restarting; try again in a moment.`),
+        { code: 'backend_unavailable' },
+      )
+    }
     throw error
   } finally {
     window.clearTimeout(timeout)
   }
 }
 
-export async function mediaUrl(path: string): Promise<string> {
-  const runtime = await runtimeConfig()
+/** URL for <audio>/<img>, which cannot send the session header. */
+export function buildMediaUrl(runtime: RuntimeConfig, path: string): string {
   const joiner = path.includes('?') ? '&' : '?'
   return `${runtime.baseUrl}${path}${joiner}token=${encodeURIComponent(runtime.token)}`
+}
+
+export async function mediaUrl(path: string): Promise<string> {
+  return buildMediaUrl(await runtimeConfig(), path)
 }
 
 export const api = {
@@ -161,6 +185,7 @@ export const api = {
   deleteJobHistory: () => request<{ affected: number }>('/api/jobs/history', { method: 'DELETE' }),
   dig: (values: Record<string, unknown>) =>
     request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }, 180_000),
+  cancelDig: () => request<{ affected: number }>('/api/discovery/dig', { method: 'DELETE' }),
   rematch: (suggestion: import('./types').Suggestion, excludeVideoIds: string[]) =>
     request<import('./types').Suggestion>('/api/discovery/rematch', {
       method: 'POST', body: JSON.stringify({ suggestion, exclude_video_ids: excludeVideoIds }),
@@ -207,29 +232,94 @@ export const api = {
     }),
 }
 
-export async function connectEvents(onEvent: (event: QueueEvent) => void, onConnected?: () => void): Promise<() => void> {
-  const runtime = await runtimeConfig()
-  const base = runtime.baseUrl || window.location.origin
-  const url = new URL('/api/events', base)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.searchParams.set('token', runtime.token)
+export interface EventStreamHandlers {
+  onEvent: (event: QueueEvent) => void
+  /** Socket (re)connected: resync anything that may have been missed. */
+  onConnected?: () => void
+  /** Connection state for status indicators. */
+  onStatus?: (connected: boolean) => void
+}
+
+const HEARTBEAT_TIMEOUT_MS = 45_000
+const MAX_RETRY_MS = 10_000
+
+/**
+ * Live event stream with reconnect back-off, heartbeat watchdog and gap
+ * detection. The engine address is re-read on every attempt, so a restart
+ * on a new port is picked up automatically.
+ */
+export async function connectEvents(handlers: EventStreamHandlers): Promise<() => void> {
   let socket: WebSocket | undefined
   let closed = false
   let retry: number | undefined
+  let watchdog: number | undefined
+  let attempts = 0
+  let lastSeq: number | null = null
 
-  const connect = () => {
+  const scheduleReconnect = () => {
     if (closed) return
-    socket = new WebSocket(url)
-    socket.onopen = () => onConnected?.()
-    socket.onmessage = (message) => onEvent(JSON.parse(message.data) as QueueEvent)
-    socket.onclose = () => {
-      if (!closed) retry = window.setTimeout(connect, 1500)
+    // Exponential back-off with jitter, so restarts are not hammered.
+    const base = Math.min(MAX_RETRY_MS, 1000 * 2 ** Math.min(attempts, 4))
+    attempts += 1
+    retry = window.setTimeout(() => { void connect() }, base / 2 + Math.random() * base / 2)
+  }
+  const armWatchdog = () => {
+    window.clearTimeout(watchdog)
+    // The server pings every 15s; silence means the connection is dead.
+    watchdog = window.setTimeout(() => socket?.close(), HEARTBEAT_TIMEOUT_MS)
+  }
+
+  const connect = async () => {
+    if (closed) return
+    let url: URL
+    try {
+      const runtime = await runtimeConfig()
+      url = new URL('/api/events', runtime.baseUrl || window.location.origin)
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+      url.searchParams.set('token', runtime.token)
+    } catch {
+      scheduleReconnect()
+      return
+    }
+    if (closed) return
+    const current = new WebSocket(url)
+    socket = current
+    current.onopen = () => {
+      attempts = 0
+      lastSeq = null
+      armWatchdog()
+      handlers.onStatus?.(true)
+      handlers.onConnected?.()
+    }
+    current.onmessage = (message) => {
+      armWatchdog()
+      let event: QueueEvent & { seq?: number }
+      try {
+        event = JSON.parse(message.data)
+      } catch {
+        return
+      }
+      if (event.type === 'ping') return
+      if (typeof event.seq === 'number') {
+        // A gap means the server dropped events for a slow client: resync.
+        if (lastSeq !== null && event.seq > lastSeq + 1) handlers.onConnected?.()
+        lastSeq = event.seq
+      }
+      handlers.onEvent(event)
+    }
+    current.onerror = () => current.close()
+    current.onclose = () => {
+      window.clearTimeout(watchdog)
+      if (socket !== current) return
+      handlers.onStatus?.(false)
+      scheduleReconnect()
     }
   }
-  connect()
+  void connect()
   return () => {
     closed = true
-    if (retry) window.clearTimeout(retry)
+    window.clearTimeout(retry)
+    window.clearTimeout(watchdog)
     socket?.close()
   }
 }

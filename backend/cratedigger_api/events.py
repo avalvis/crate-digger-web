@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,6 +29,7 @@ class EventHub:
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._seq = itertools.count(1)
 
     def bind(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -47,6 +49,9 @@ class EventHub:
         payload.setdefault(
             "timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds")
         )
+        # Monotonic per process; a gap tells the client an event was dropped
+        # (slow consumer) and it should resync from the REST API.
+        payload["seq"] = next(self._seq)
         loop = self._loop
         if loop and loop.is_running():
             loop.call_soon_threadsafe(self._deliver, payload)

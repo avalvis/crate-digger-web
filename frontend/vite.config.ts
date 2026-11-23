@@ -1,9 +1,14 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+// tauri.conf.json is the single source of truth for the app version.
+import tauriConfig from '../src-tauri/tauri.conf.json'
+
+const appVersion = tauriConfig.version
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: { __APP_VERSION__: JSON.stringify(appVersion) },
   server: {
     port: 5173,
     strictPort: true,

@@ -26,7 +26,6 @@ interface PlayerState {
   muted: boolean
   shuffle: boolean
   repeat: boolean
-  spectrum: number[]
   setTrack: (track: PlayerTrack) => void
   playReel: (items: Suggestion[], selectedId: string, mode?: 'quick' | 'full') => void
   selectIndex: (index: number, mode?: 'quick' | 'full') => void
@@ -40,7 +39,6 @@ interface PlayerState {
   setMuted: (muted: boolean) => void
   toggleShuffle: () => void
   toggleRepeat: () => void
-  setSpectrum: (values: number[]) => void
   clear: () => void
 }
 
@@ -72,7 +70,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   muted: false,
   shuffle: false,
   repeat: false,
-  spectrum: Array.from({ length: 48 }, () => 0.08),
   setTrack: (track) => set((state) => ({
     track,
     playlist: [track],
@@ -153,7 +150,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setMuted: (muted) => set({ muted }),
   toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),
   toggleRepeat: () => set((state) => ({ repeat: !state.repeat })),
-  setSpectrum: (spectrum) => set({ spectrum }),
   clear: () => set((state) => ({
     track: null, playlist: [], currentIndex: -1, playing: false, preparing: false,
     requestToken: state.requestToken + 1,

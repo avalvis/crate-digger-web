@@ -545,13 +545,12 @@ dependencies = [
 
 [[package]]
 name = "crate-digger"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
- "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tauri-plugin-shell",
  "uuid",

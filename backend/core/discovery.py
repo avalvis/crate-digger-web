@@ -49,6 +49,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Optional
 
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 from core.database import DiscoveryRecord, VaultDatabase
 from core.sampling_taxonomy import (
@@ -296,6 +297,8 @@ class DiscoveryEngine:
 
     # How many Discogs candidates to try when the first YT match fails.
     MAX_YT_MATCH_ATTEMPTS = 10
+    # Concurrent YouTube Music lookups per window (still rate-limited).
+    YTM_MATCH_PARALLELISM = 4
     MIN_YT_MATCH_SCORE = 0.55
 
     # A filterless dig is a portfolio, not one random genre. Each request
@@ -436,6 +439,8 @@ class DiscoveryEngine:
         # Recently surfaced master IDs (current app session). LRU so memory
         # stays bounded; cleared only when the engine is recreated.
         self._session_surfaced: OrderedDict[int, None] = OrderedDict()
+        # Guards session history and stats against concurrent digs.
+        self._state_lock = threading.Lock()
 
         # ytmusicapi.YTMusic is thread-safe in practice for search/get
         # calls; we hold one client for the app lifetime.
@@ -545,55 +550,65 @@ class DiscoveryEngine:
             max(count * 5 + self.MAX_YT_MATCH_ATTEMPTS, len(pool) // 2),
         )
 
-        for cand in pool[:max_attempts]:
-            self._check_cancel(cancel_event)
-            if len(suggestions) >= count:
-                break
-            self._emit_progress(
-                progress,
-                f"Matching on YouTube — {len(suggestions)}/{count}…",
-            )
-            try:
-                suggestion = self._match_youtube(cand)
-            except NoYouTubeMatchError as e:
-                last_error = e
-                self._log.debug(
-                    "No YT match for %s — %s: %s", cand.artist, cand.title, e,
+        # Match a small window of candidates concurrently, then consume the
+        # results in pool order so the reel is the same as a serial walk.
+        attempts = pool[:max_attempts]
+        window = self.YTM_MATCH_PARALLELISM
+        with ThreadPoolExecutor(max_workers=window, thread_name_prefix="ytm-match") as executor:
+            for offset in range(0, len(attempts), window):
+                self._check_cancel(cancel_event)
+                if len(suggestions) >= count:
+                    break
+                self._emit_progress(
+                    progress,
+                    f"Matching on YouTube — {len(suggestions)}/{count}…",
                 )
-                continue
-            # De-dupe within a single reel (different masters can resolve
-            # to the same upload).
-            if (
-                suggestion.discogs_master_id in seen_master_ids
-                or suggestion.youtube_video_id in seen_video_ids
-            ):
-                continue
-            seen_master_ids.add(suggestion.discogs_master_id)
-            seen_video_ids.add(suggestion.youtube_video_id)
+                batch = attempts[offset:offset + window]
+                futures = [executor.submit(self._match_youtube, cand) for cand in batch]
+                for cand, future in zip(batch, futures):
+                    if len(suggestions) >= count:
+                        break
+                    try:
+                        suggestion = future.result()
+                    except NoYouTubeMatchError as e:
+                        last_error = e
+                        self._log.debug(
+                            "No YT match for %s — %s: %s", cand.artist, cand.title, e,
+                        )
+                        continue
+                    # De-dupe within a single reel (different masters can resolve
+                    # to the same upload).
+                    if (
+                        suggestion.discogs_master_id in seen_master_ids
+                        or suggestion.youtube_video_id in seen_video_ids
+                    ):
+                        continue
+                    seen_master_ids.add(suggestion.discogs_master_id)
+                    seen_video_ids.add(suggestion.youtube_video_id)
 
-            artist = _norm_label(_extract_primary_artist(suggestion.artist)) or "unknown"
-            country = _norm_country(suggestion.country) or "unknown"
-            lane = self._producer_lane(cand)
-            repeats_artist = artist != "unknown" and artist_counts.get(artist, 0) >= 1
-            repeats_country = (
-                use_portfolio_caps
-                and not filters.country
-                and country_counts.get(country, 0) >= country_cap
-            )
-            repeats_lane = use_portfolio_caps and lane_counts.get(lane, 0) >= lane_cap
-            if repeats_artist or repeats_country or repeats_lane:
-                deferred_suggestions.append(suggestion)
-                continue
+                    artist = _norm_label(_extract_primary_artist(suggestion.artist)) or "unknown"
+                    country = _norm_country(suggestion.country) or "unknown"
+                    lane = self._producer_lane(cand)
+                    repeats_artist = artist != "unknown" and artist_counts.get(artist, 0) >= 1
+                    repeats_country = (
+                        use_portfolio_caps
+                        and not filters.country
+                        and country_counts.get(country, 0) >= country_cap
+                    )
+                    repeats_lane = use_portfolio_caps and lane_counts.get(lane, 0) >= lane_cap
+                    if repeats_artist or repeats_country or repeats_lane:
+                        deferred_suggestions.append(suggestion)
+                        continue
 
-            suggestions.append(suggestion)
-            artist_counts[artist] = artist_counts.get(artist, 0) + 1
-            country_counts[country] = country_counts.get(country, 0) + 1
-            lane_counts[lane] = lane_counts.get(lane, 0) + 1
-            self._log.info(
-                "Reel match %d/%d: %s — %s (YT %.2f, affinity %.2f)",
-                len(suggestions), count, cand.artist, cand.title,
-                suggestion.match_score, cand.sample_affinity,
-            )
+                    suggestions.append(suggestion)
+                    artist_counts[artist] = artist_counts.get(artist, 0) + 1
+                    country_counts[country] = country_counts.get(country, 0) + 1
+                    lane_counts[lane] = lane_counts.get(lane, 0) + 1
+                    self._log.info(
+                        "Reel match %d/%d: %s — %s (YT %.2f, affinity %.2f)",
+                        len(suggestions), count, cand.artist, cand.title,
+                        suggestion.match_score, cand.sample_affinity,
+                    )
 
         # Diversity is a preference, never a reason to return a short reel.
         # Credible matches deferred by the caps are restored in ranked order
@@ -722,11 +737,12 @@ class DiscoveryEngine:
 
     def _remember_surfaced(self, master_ids: Iterable[int]) -> None:
         """Track masters shown on a reel so the next dig explores outward."""
-        for mid in master_ids:
-            self._session_surfaced[mid] = None
-            self._session_surfaced.move_to_end(mid)
-        while len(self._session_surfaced) > self.SESSION_SURFACED_MAX:
-            self._session_surfaced.popitem(last=False)
+        with self._state_lock:
+            for mid in master_ids:
+                self._session_surfaced[mid] = None
+                self._session_surfaced.move_to_end(mid)
+            while len(self._session_surfaced) > self.SESSION_SURFACED_MAX:
+                self._session_surfaced.popitem(last=False)
 
     def _rank_and_shuffle(
         self, candidates: list[DiscogsCandidate], filters: DiscoveryFilters,
@@ -737,7 +753,8 @@ class DiscoveryEngine:
         then interleave lanes so one reel does not collapse into eight
         near-identical records.
         """
-        session_seen = set(self._session_surfaced)
+        with self._state_lock:
+            session_seen = set(self._session_surfaced)
         fresh = [
             c for c in candidates
             if c.master_id not in session_seen
@@ -1288,12 +1305,16 @@ class DiscoveryEngine:
 
         def _do() -> dict[str, Any]:
             waited = self._discogs_limiter.acquire()
-            self._stats.discogs_rate_waits += waited
-            self._stats.discogs_requests += 1
+            with self._state_lock:
+                self._stats.discogs_rate_waits += waited
+                self._stats.discogs_requests += 1
             try:
                 resp = self._session.get(
                     url, headers=headers, params=params, timeout=(5, 20),
                 )
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # Transient network trouble: let the backoff helper retry.
+                raise _RetryableError(f"Discogs network error: {e}") from e
             except requests.RequestException as e:
                 raise DiscoveryError(f"Discogs network error: {e}") from e
 
@@ -1463,10 +1484,13 @@ class DiscoveryEngine:
         """Rate-limited, retry-wrapped YTM search. Returns [] on failure."""
         def _do() -> list[dict[str, Any]]:
             waited = self._ytm_limiter.acquire()
-            self._stats.ytm_rate_waits += waited
-            self._stats.ytm_requests += 1
-            with self._ytm_lock:
+            with self._state_lock:
+                self._stats.ytm_rate_waits += waited
+                self._stats.ytm_requests += 1
+            try:
                 return ytm.search(query=query, filter=ytm_filter, limit=15) or []
+            except (requests.ConnectionError, requests.Timeout) as e:
+                raise _RetryableError(f"YouTube Music network error: {e}") from e
 
         try:
             return self._with_backoff(_do, what=f"YTM search ({ytm_filter!r})")
@@ -1583,8 +1607,12 @@ class DiscoveryEngine:
 
     def _get_ytm_client(self) -> Any:
         """Lazy-init the ytmusicapi client. Deferred import saves 300ms boot."""
-        if self._ytm_client is not None:
+        with self._ytm_lock:
+            if self._ytm_client is None:
+                self._ytm_client = self._create_ytm_client()
             return self._ytm_client
+
+    def _create_ytm_client(self) -> Any:
         try:
             from ytmusicapi import YTMusic
         except ImportError as e:
@@ -1593,8 +1621,16 @@ class DiscoveryEngine:
             ) from e
         # No auth file — unauthenticated search works fine for our needs
         # and avoids shipping a user auth flow for the MVP.
-        self._ytm_client = YTMusic()
-        return self._ytm_client
+        import requests
+
+        class _TimeoutSession(requests.Session):
+            # ytmusicapi sets no timeout; a stalled request would otherwise
+            # hold the shared YTM lock and freeze every dig.
+            def request(self, *args: Any, **kwargs: Any) -> Any:
+                kwargs.setdefault("timeout", (5, 20))
+                return super().request(*args, **kwargs)
+
+        return YTMusic(requests_session=_TimeoutSession())
 
     # ── Generic retry helper ──
 

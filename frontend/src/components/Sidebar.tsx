@@ -1,5 +1,5 @@
 import { Disc3, FolderArchive, ListMusic, Radio, Settings, SlidersHorizontal } from 'lucide-react'
-import { NavLink } from 'react-router-dom'
+import { NavLink } from 'react-router'
 import type { QueueJob, QueueSummary } from '../lib/types'
 import { Brand } from './Brand'
 
@@ -13,7 +13,7 @@ const navigation = [
 
 const EMPTY_SUMMARY: QueueSummary = { running: 0, waiting: 0, completed: 0, attention: 0, current_job_id: null }
 
-export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue }: { jobs: QueueJob[]; summary?: QueueSummary; onQueue: () => void }) {
+export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue, settingsAlert = false }: { jobs: QueueJob[]; summary?: QueueSummary; onQueue: () => void; settingsAlert?: boolean }) {
   const active = jobs.find((job) => job.id === summary.current_job_id)
     || jobs.find((job) => !['pending', 'complete', 'complete_with_warnings', 'failed', 'cancelled'].includes(job.status))
   const waiting = summary.waiting
@@ -33,6 +33,7 @@ export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue }: { jobs: Queu
           <NavLink key={to} to={to} end={to === '/'} className={({ isActive }) => `nav-link ${isActive ? 'nav-link--active' : ''}`}>
             <Icon size={19} strokeWidth={1.8} />
             <span>{label}</span>
+            {to === '/settings' && settingsAlert && <span className="nav-link__dot" role="img" aria-label="Tool updates need attention" />}
           </NavLink>
         ))}
       </nav>
@@ -45,7 +46,7 @@ export function Sidebar({ jobs, summary = EMPTY_SUMMARY, onQueue }: { jobs: Queu
           {(summary.running > 0 || summary.waiting > 0) && <div className="queue-dock__counts">{summary.running} running · {summary.waiting} waiting</div>}
         </div>
       </button>
-      <div className="sidebar__version">v0.2.5 WEB</div>
+      <div className="sidebar__version">v{__APP_VERSION__}</div>
     </aside>
   )
 }

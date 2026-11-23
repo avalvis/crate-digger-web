@@ -34,7 +34,6 @@ import os
 import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -45,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from utils.paths import sanitize_filename_component
+from utils.proc import terminate_tree, wait_or_kill
 
 if TYPE_CHECKING:
     from core.chopper import ChopPlan
@@ -542,6 +542,8 @@ class MPCExporter:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 **self._subprocess_platform_kwargs(with_process_group=True),
             )
@@ -622,7 +624,10 @@ class MPCExporter:
             # Drain any final stdout chunks so the thread can exit cleanly.
             t_out.join(timeout=2.0)
             t_err.join(timeout=2.0)
-            rc = proc.wait()
+            try:
+                rc = wait_or_kill(proc, timeout=60)
+            except subprocess.TimeoutExpired as exc:
+                raise ExportError("ffmpeg stopped responding after finishing its output") from exc
 
             if rc != 0:
                 stderr_tail = "\n".join(stderr_lines[-10:]) or "(no stderr)"
@@ -675,6 +680,8 @@ class MPCExporter:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 **self._subprocess_platform_kwargs(with_process_group=True),
             )
@@ -742,7 +749,10 @@ class MPCExporter:
 
             t_out.join(timeout=2.0)
             t_err.join(timeout=2.0)
-            rc = proc.wait()
+            try:
+                rc = wait_or_kill(proc, timeout=60)
+            except subprocess.TimeoutExpired as exc:
+                raise ExportError("ffmpeg stopped responding after finishing its output") from exc
             if rc != 0:
                 stderr_tail = "\n".join(stderr_lines[-10:]) or "(no stderr)"
                 raise ExportError(
@@ -871,25 +881,8 @@ class MPCExporter:
     # ── Cancel plumbing ──
 
     def _terminate_process(self, proc: subprocess.Popen) -> None:
-        """Graceful SIGTERM → 3s grace → SIGKILL. Cross-platform."""
-        if proc.poll() is not None:
-            return
-        try:
-            if sys.platform == "win32":
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                proc.terminate()
-        except (ProcessLookupError, OSError):
-            return
-
-        try:
-            proc.wait(timeout=3.0)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-                proc.wait(timeout=2.0)
-            except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
-                pass
+        """Stop the child and its descendants (the frozen build nests them)."""
+        terminate_tree(proc)
 
     @staticmethod
     def _subprocess_platform_kwargs(

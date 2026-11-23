@@ -23,6 +23,7 @@ via callback / threading.Event, matching the rest of the engine.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -680,6 +681,30 @@ class PreviewService:
 
     # ── Peaks ──
 
+    # Waveform-only decode: mono at a low rate is ~11x less data than the
+    # stereo playback decode and indistinguishable at display resolution.
+    _PEAKS_SAMPLE_RATE = 8000
+
+    def peaks_for_file(self, path: Path) -> tuple[np.ndarray, float]:
+        """Return (peaks, duration_seconds) for a local audio file."""
+        cmd = [
+            self._ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", str(self._PEAKS_SAMPLE_RATE), "-",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=180, **self._subprocess_kwargs())
+        except FileNotFoundError as e:
+            raise PreviewDecodeError(f"ffmpeg not found: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise PreviewDecodeError("ffmpeg decode timed out.") from e
+        if result.returncode != 0 or not result.stdout:
+            tail = (result.stderr or b"").decode("utf-8", "replace")[-400:]
+            raise PreviewDecodeError(f"ffmpeg decode failed: {tail}")
+        mono = np.frombuffer(result.stdout, dtype=np.float32)
+        if mono.size == 0:
+            raise PreviewDecodeError("Decoded audio was empty.")
+        return self._compute_peaks(mono.reshape(-1, 1)), mono.size / float(self._PEAKS_SAMPLE_RATE)
+
     def _compute_peaks(self, samples: np.ndarray) -> np.ndarray:
         """Downsample the mono mix into max-abs buckets, normalized to 1."""
         mono = samples.mean(axis=1)
@@ -711,6 +736,10 @@ class PreviewService:
         for sep in ("&", "?", "/"):
             if sep in v:
                 v = v.split(sep, 1)[0]
+        # The id is used in cache globs and yt-dlp output templates, so only
+        # a genuine 11-character YouTube id is accepted.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", v):
+            raise ValueError("Invalid YouTube video id")
         return v
 
     @staticmethod

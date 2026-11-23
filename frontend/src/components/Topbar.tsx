@@ -1,6 +1,7 @@
 import { Minus, Search, Square, X } from 'lucide-react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 import { windowAction } from '../lib/desktop'
+import { ConnectionHint } from './BackendOverlay'
 
 const titles: Record<string, [string, string]> = {
   '/': ['DIGITAL', 'CRATE'],
@@ -17,6 +18,7 @@ export function Topbar({ query, onQuery }: { query: string; onQuery: (value: str
     <header className="topbar" data-tauri-drag-region>
       <h1>{plain} <span>{accent}</span></h1>
       <div className="topbar__spacer" />
+      <ConnectionHint />
       {location.pathname === '/vault' && (
         <label className="top-search">
           <Search size={18} />
