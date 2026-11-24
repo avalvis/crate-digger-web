@@ -185,7 +185,13 @@ select { height: 35px; min-width: 145px; color: #e9e9e4; background: #161714; bo
 .played-list { padding: 9px; display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 7px; }
 .played-card { min-width: 0; min-height: 84px; padding: 10px; display: grid; grid-template-columns: 62px minmax(115px, 1fr) auto; align-items: center; gap: 12px; border: 1px solid #292a24; background: #0c0d0bdb; transition: border-color .16s, background .16s; }
 .played-card:hover { border-color: #4b4924; background: #15160f; }
-.played-card > .record-art { width: 62px; border-radius: 3px; filter: saturate(.72) brightness(.82); }
+/* Heard records read as done: greyed and quieter until you reach for them. */
+.played-card { opacity: .62; transition: opacity .15s, border-color .15s; }
+.played-card:hover, .played-card:focus-within { opacity: 1; }
+.played-card--kept { opacity: .9; border-color: #5c571e; }
+.played-card__copy > span { display: inline-flex; align-items: center; gap: 4px; }
+.played-card > .record-art { width: 62px; border-radius: 3px; filter: grayscale(1) brightness(.7); }
+.played-card:hover > .record-art, .played-card--kept > .record-art { filter: saturate(.85) brightness(.9); }
 .played-card__copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .played-card__copy > span { color: #77744a; font-size: 9px; font-weight: 900; letter-spacing: 1px; }
 .played-card__copy strong { overflow: hidden; color: #dbdcd5; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
@@ -500,6 +506,30 @@ input:focus, textarea:focus { border-color: #7b7410; box-shadow: 0 0 0 1px #7b74
 .backend-overlay__note { color: var(--muted) !important; font-size: 12px !important; }
 .connection-hint { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; padding: 4px 9px; border: 1px solid #4c481e; color: #e9e5b9; font-size: 11px; }
 .vault-more { display: flex; justify-content: center; padding: 18px 0; }
+.keep-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 11px; border: 1px solid #3a3b35; background: transparent; color: #b9bab2; font-size: 11px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.keep-button:hover { color: white; border-color: #5c5d55; }
+.keep-button.is-kept { color: var(--yellow); border-color: #6b6420; background: #1d1c0c; }
+.keep-button--compact { width: 30px; height: 30px; padding: 0; }
+.history-button { display: inline-flex; align-items: center; gap: 6px; height: 34px; margin-right: 10px; padding: 0 11px; border: 1px solid #3a3b35; background: #11120f; color: #deded4; font-size: 11px; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+.history-button:hover { border-color: var(--yellow); color: var(--yellow); }
+.view-switch .history-button { width: auto; display: inline-flex; color: #deded4; }
+/* The featured hero is light: give the keep toggle the dark button look. */
+.featured-dig__actions .keep-button { color: #f2f2ec; background: #10110f; border-color: #10110f; height: 36px; }
+.featured-dig__actions .keep-button:hover { background: #292a26; border-color: #292a26; }
+.featured-dig__actions .keep-button.is-kept { color: var(--yellow); background: #10110f; border-color: var(--yellow); }
+.history-tabs { display: flex; align-items: center; gap: 8px; margin: 16px 0 10px; }
+.history-tabs button { display: inline-flex; align-items: center; gap: 5px; }
+.history-count { margin-left: auto; color: #8e9088; font-size: 11px; }
+.history-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; flex: 1; }
+.history-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 4px; border-top: 1px solid #262721; }
+.history-row__art { width: 46px; height: 46px; display: grid; place-items: center; overflow: hidden; background: #1b1c18; color: #6f716a; }
+.history-row__art img { width: 100%; height: 100%; object-fit: cover; }
+.history-row__copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.history-row__copy strong, .history-row__copy span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.history-row__copy strong { color: #ecece6; font-size: 13px; }
+.history-row__copy span { color: #a6a89e; font-size: 11px; }
+.history-row__copy small { color: #7d7f76; font-size: 10px; }
+.history-row__actions { display: flex; align-items: center; gap: 4px; }
 .page-loading { min-height: 240px; }
 .error-boundary { display: flex; align-items: center; gap: 10px; }
 .error-boundary .button { margin-left: auto; }

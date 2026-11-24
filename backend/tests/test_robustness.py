@@ -310,3 +310,41 @@ def test_sidecar_binds_its_own_port_and_reports_it(tmp_path):
     finally:
         proc.kill()
         proc.wait(10)
+
+
+# ── Listening history ──
+
+def _suggestion(video_id: str, master: int) -> dict:
+    return {"discogs_master_id": master, "artist": "Artist", "title": f"Song {master}",
+            "youtube_url": f"https://youtube.com/watch?v={video_id}", "youtube_video_id": video_id}
+
+
+def test_listening_history_counts_plays_and_keeps(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path / "data", api_token=TOKEN)) as client:
+        a, b = _suggestion("dQw4w9WgXcQ", 1), _suggestion("9bZkp7q19f0", 2)
+        assert client.post("/api/listening/plays", headers=HEADERS, json={"suggestion": a}).status_code == 204
+        assert client.post("/api/listening/plays", headers=HEADERS, json={"suggestion": a}).status_code == 204
+        # Keeping works for a record that was never played.
+        assert client.put("/api/listening/likes", headers=HEADERS, json={"suggestion": b, "liked": True}).status_code == 204
+
+        history = client.get("/api/listening", headers=HEADERS).json()
+        assert history["total"] == 2
+        entries = {item["suggestion"]["youtube_video_id"]: item for item in history["items"]}
+        assert entries["dQw4w9WgXcQ"]["play_count"] == 2 and not entries["dQw4w9WgXcQ"]["liked"]
+        assert entries["9bZkp7q19f0"]["liked"] and entries["9bZkp7q19f0"]["play_count"] == 0
+
+        kept = client.get("/api/listening?filter=liked", headers=HEADERS).json()
+        assert [item["suggestion"]["title"] for item in kept["items"]] == ["Song 2"]
+
+        states = client.get("/api/listening/states?video_ids=dQw4w9WgXcQ,9bZkp7q19f0,bad", headers=HEADERS).json()
+        assert {s["video_id"]: (s["play_count"], s["liked"]) for s in states} == {
+            "dQw4w9WgXcQ": (2, False), "9bZkp7q19f0": (0, True)}
+
+        client.put("/api/listening/likes", headers=HEADERS, json={"suggestion": b, "liked": False})
+        assert client.get("/api/listening?filter=liked", headers=HEADERS).json()["total"] == 0
+
+
+def test_listening_requires_a_playable_source(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path / "data", api_token=TOKEN)) as client:
+        demo = {"discogs_master_id": 5, "artist": "A", "title": "T"}
+        assert client.post("/api/listening/plays", headers=HEADERS, json={"suggestion": demo}).status_code == 422

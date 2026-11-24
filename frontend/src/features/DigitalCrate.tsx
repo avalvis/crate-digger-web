@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router'
 import { Dialog, DropdownMenu } from 'radix-ui'
 import {
-  Check, Copy, Cpu, Disc3, FileAudio, FolderOpen, Grid2X2, Headphones, List, LoaderCircle, MoreVertical,
+  Check, Copy, Cpu, Disc3, FileAudio, FolderOpen, Grid2X2, Headphones, History, List, LoaderCircle, MoreVertical,
   Play, Plus, RefreshCw, RotateCcw, SlidersHorizontal, Waves, WandSparkles, X,
 } from 'lucide-react'
 import crateArtwork from '../assets/crate.webp'
@@ -14,6 +14,7 @@ import { useDigitalCrateStore } from '../store/digitalCrate'
 import { usePlayerStore } from '../store/player'
 import { useShallow } from 'zustand/react/shallow'
 import { SpectrumBars } from '../components/SpectrumBars'
+import { KeepButton, ListeningHistory } from '../components/ListeningHistory'
 import { useToastStore } from '../store/toast'
 
 const profiles = [
@@ -141,6 +142,7 @@ function SuggestionCard({ item, index, previewState, active, preparing, queueing
         <button className="button button--outline" aria-label={`Play ${item.artist} — ${item.title}`} disabled={!playable || preparing} onClick={() => onPlay(item)}>{preparing && active ? <LoaderCircle size={14} className="spin" /> : <Play size={14} fill="currentColor" />} {previewLabel(previewState, active, preparing)}</button>
         <button className="button button--outline" aria-label={`Load full track ${item.artist} — ${item.title}`} disabled={!playable || (active && preparing)} onClick={() => onPlay(item, 'full')}><Waves size={14} /> Full track</button>
         <button className="button button--primary" disabled={!item.youtube_url || queueing} onClick={() => onQueue(item)}><Plus size={15} /> {queueing ? 'Queueing…' : 'Queue'}</button>
+        <KeepButton item={item} />
         <SongActionMenu item={item} queueing={queueing} {...actions} />
       </div>
       {item.discogs_url && <button className="discogs-credit" onClick={() => openExternal(item.discogs_url!)}>Data provided by Discogs</button>}
@@ -153,10 +155,12 @@ function PlayedCard({ item, index, playedNumber, queueing, actions, onPlay, onQu
   actions: Omit<ActionMenuProps, 'item' | 'queueing'>
   onPlay: (item: Suggestion) => void; onQueue: (item: Suggestion, stems?: boolean) => void
 }) {
-  return <article className="played-card">
+  const kept = useDigitalCrateStore((state) => !!item.youtube_video_id && state.likedVideoIds.includes(item.youtube_video_id))
+  return <article className={`played-card ${kept ? 'played-card--kept' : ''}`} aria-label={`Played: ${item.artist} — ${item.title}${kept ? ' (kept)' : ''}`}>
     <RecordArtwork item={item} index={index} />
-    <div className="played-card__copy"><span>PLAYED {String(playedNumber).padStart(2, '0')}</span><strong>{item.title}</strong><small>{item.artist}</small></div>
+    <div className="played-card__copy"><span><Check size={10} /> PLAYED {String(playedNumber).padStart(2, '0')}{kept ? ' · KEPT' : ''}</span><strong>{item.title}</strong><small>{item.artist}</small></div>
     <div className="played-card__actions">
+      <KeepButton item={item} compact />
       <button className="button button--outline" aria-label={`Replay ${item.artist} — ${item.title}`} disabled={!item.youtube_video_id} onClick={() => onPlay(item)}><RotateCcw size={13} /> Replay</button>
       <button className="button button--primary" disabled={!item.youtube_url || queueing} onClick={() => onQueue(item)}><Plus size={13} /> {queueing ? 'Queueing…' : 'Queue'}</button>
       <SongActionMenu item={item} queueing={queueing} {...actions} />
@@ -166,6 +170,7 @@ function PlayedCard({ item, index, playedNumber, queueing, actions, onPlay, onQu
 
 export function DigitalCrate() {
   const crate = useDigitalCrateStore()
+  const [historyOpen, setHistoryOpen] = useState(false)
   const handledRun = useRef(0)
   const navigate = useNavigate()
   const toast = useToastStore((state) => state.show)
@@ -323,7 +328,7 @@ export function DigitalCrate() {
       <label>Country<select value={crate.country} onChange={(event) => crate.setCountry(event.target.value)}><option value="">World roulette</option>{countries.slice(1).map((value) => <option key={value}>{value}</option>)}</select></label>
       <label>Genre override<select value={crate.genre} onChange={(event) => crate.setGenre(event.target.value)}><option value="">Let the lens choose</option><option>Funk / Soul</option><option>Jazz</option><option>Latin</option><option>Stage & Screen</option><option>Reggae</option><option>Folk, World, & Country</option><option>Rock</option><option>Electronic</option></select></label>
       <button className="button button--primary dig-button" onClick={startDig} disabled={config.isPending || config.isError || digging}><RefreshCw size={16} className={digging ? 'spin' : ''} /> {digging ? 'Digging…' : needsDiscogs ? 'Add Discogs token' : 'Dig for gems'}</button>
-    </div><div className="view-switch"><SlidersHorizontal size={16} /><button className={crate.view === 'list' ? 'active' : ''} onClick={() => crate.setView('list')}><List size={18} /></button><button className={crate.view === 'grid' ? 'active' : ''} onClick={() => crate.setView('grid')}><Grid2X2 size={18} /></button></div></section>
+    </div><div className="view-switch"><button className="history-button" onClick={() => setHistoryOpen(true)} title="Records you played or kept"><History size={16} /> History</button><SlidersHorizontal size={16} /><button className={crate.view === 'list' ? 'active' : ''} onClick={() => crate.setView('list')}><List size={18} /></button><button className={crate.view === 'grid' ? 'active' : ''} onClick={() => crate.setView('grid')}><Grid2X2 size={18} /></button></div></section>
 
     {config.isError && <div className="error-state"><Disc3 size={18} /><span>The local engine did not return its settings.</span><button className="button button--outline" onClick={() => config.refetch()}>Reconnect</button></div>}
     {needsDiscogs && <div className="notice notice--action"><Disc3 size={18} /><span>This independent profile needs its own Discogs token before it can dig live gems.</span><button className="button button--outline" onClick={() => navigate('/settings')}>Open settings</button></div>}
@@ -340,7 +345,7 @@ export function DigitalCrate() {
         <div className="featured-dig__copy"><span aria-live="polite">{activeSuggestion ? `NOW PLAYING${canonicalPosition ? ` · ${canonicalPosition}` : ''}` : `TOP PULL · ${profiles.find(([value]) => value === crate.profile)?.[1]}`}</span>
           <h2>{featured!.title}</h2><strong>{featured!.artist}</strong><SampleReasons item={featured!} />
           <SpectrumBars active={activePlaying} />
-          <div className="featured-dig__actions"><button className="button button--primary" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!)}><Play size={14} /> {activeSuggestion === featured && player.playing ? 'Playing' : 'Preview'}</button><button className="button button--dark" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!, 'full')}><Waves size={14} /> Full track</button><button className="button button--dark" disabled={!featured!.youtube_url} onClick={() => queue(featured!)}><Plus size={14} /> Queue</button><SongActionMenu item={featured!} queueing={enqueue.isPending && enqueue.variables?.item === featured} {...songActions(featured!)} /></div>
+          <div className="featured-dig__actions"><button className="button button--primary" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!)}><Play size={14} /> {activeSuggestion === featured && player.playing ? 'Playing' : 'Preview'}</button><button className="button button--dark" disabled={!featured!.youtube_video_id || player.preparing} onClick={() => play(featured!, 'full')}><Waves size={14} /> Full track</button><button className="button button--dark" disabled={!featured!.youtube_url} onClick={() => queue(featured!)}><Plus size={14} /> Queue</button><KeepButton item={featured!} /><SongActionMenu item={featured!} queueing={enqueue.isPending && enqueue.variables?.item === featured} {...songActions(featured!)} /></div>
         </div><RecordArtwork item={featured} index={featuredIndex} featured playing={activePlaying} />
       </section>
       <section className="crate-lane" aria-labelledby="up-next-heading"><div className="crate-lane__heading"><div><span className="eyebrow">KEEP DIGGING</span><h3 id="up-next-heading">Up next</h3></div><strong>{upNext.length}</strong></div>
@@ -349,9 +354,12 @@ export function DigitalCrate() {
         const id = `preview-${item.youtube_video_id}`
         return <SuggestionCard key={item.discogs_master_id} item={item} index={crate.items.indexOf(item)} previewState={item.youtube_video_id ? crate.previewStates[item.youtube_video_id] : undefined} active={player.track?.id === id} preparing={player.track?.id === id && player.preparing} queueing={enqueue.isPending && enqueue.variables?.item === item} actions={songActions(item)} onPlay={play} onQueue={queue} />
       })}</div></section>
-      {!!playedInReel.length && <section className="played-section" aria-labelledby="played-heading"><div className="crate-lane__heading crate-lane__heading--played"><div><span className="eyebrow"><Headphones size={12} /> SESSION MEMORY</span><h3 id="played-heading">Played this session</h3></div><strong>{playedInReel.length}</strong></div><div className="played-list">{playedShelf.map((item) => <PlayedCard key={item.youtube_video_id} item={item} index={crate.items.indexOf(item)} playedNumber={crate.playedVideoIds.indexOf(item.youtube_video_id!) + 1} queueing={enqueue.isPending && enqueue.variables?.item === item} actions={songActions(item)} onPlay={play} onQueue={queue} />)}</div>{!playedShelf.length && activeSuggestion && <div className="played-active-note">The first listened record is currently featured above.</div>}</section>}
+      {!!playedInReel.length && <section className="played-section" aria-labelledby="played-heading"><div className="crate-lane__heading crate-lane__heading--played"><div><span className="eyebrow"><Headphones size={12} /> ALREADY HEARD</span><h3 id="played-heading">Played from this crate</h3></div><strong>{playedInReel.length}</strong></div><div className="played-list">{playedShelf.map((item) => <PlayedCard key={item.youtube_video_id} item={item} index={crate.items.indexOf(item)} playedNumber={crate.playedVideoIds.indexOf(item.youtube_video_id!) + 1} queueing={enqueue.isPending && enqueue.variables?.item === item} actions={songActions(item)} onPlay={play} onQueue={queue} />)}</div>{!playedShelf.length && activeSuggestion && <div className="played-active-note">The first listened record is currently featured above.</div>}</section>}
     </>}
     <QueueFormatDialog item={queueIntent?.item || null} stems={queueIntent?.stems || false} format={queueFormat} open={!!queueIntent} busy={enqueue.isPending} onFormat={setQueueFormat} onOpenChange={(open) => !open && !enqueue.isPending && setQueueIntent(null)} onConfirm={() => queueIntent && enqueue.mutate({ ...queueIntent, format: queueFormat })} />
+    <ListeningHistory open={historyOpen} onOpenChange={setHistoryOpen}
+      onPlay={(items, item) => player.playReel(items, `preview-${item.youtube_video_id}`)}
+      onQueue={(item) => queue(item)} onMpc={openMpc} />
     <MpcModeDialog item={mpcItem} mode={mpcMode} open={!!mpcItem} busy={mpc.isPending} onMode={setMpcMode} onOpenChange={(open) => !open && setMpcItem(null)} onConfirm={() => mpcItem && mpc.mutate({ item: mpcItem, mode: mpcMode })} onSettings={() => { setMpcItem(null); navigate('/settings') }} />
   </div>
 }

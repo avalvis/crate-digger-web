@@ -22,6 +22,7 @@ via callback / threading.Event, matching the rest of the engine.
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 import subprocess
@@ -47,6 +48,13 @@ _DEFAULT_PEAK_BUCKETS = 2000
 
 # Quick preview length — enough to judge a break, fast to download on slow links.
 _QUICK_PREVIEW_SECONDS = 45.0
+# Extracted stream info (signature/challenge already solved) is reused for
+# the quick slice and the full download. YouTube stream URLs stay valid for
+# hours; 20 minutes keeps well inside that.
+_INFO_TTL_SECONDS = 20 * 60
+_INFO_CACHE_MAX = 64
+# Range-request size: YouTube throttles single long requests.
+_HTTP_CHUNK_SIZE = 10 * 1024 * 1024
 
 # YouTube's per-format stream URLs are short-lived and occasionally get
 # rejected with a 403 even though the video itself is perfectly
@@ -122,6 +130,8 @@ class PreviewService:
         self._cache_dir = Path(cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._log = logger or logging.getLogger("cratedigger.preview")
+        self._info_lock = threading.Lock()
+        self._info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._sr = int(target_sr)
         self._peak_buckets = int(peak_buckets)
         self._quick_seconds = float(quick_seconds)
@@ -301,8 +311,13 @@ class PreviewService:
         cancel_event: Optional[threading.Event] = None,
     ) -> Path:
         """
-        Download quick-preview audio to disk without decoding to PCM.
-        No-op when full or quick cache already exists.
+        Download a reel track's audio to disk without decoding it.
+
+        Fetches the whole track in one download. YouTube now makes clients
+        wait a few seconds before each download, so a separate opening slice
+        followed by the full track would pay that wait (and an extraction)
+        twice; one full download pays it once and makes "Full track" instant.
+        No-op when the track (or an older quick slice) is already cached.
         """
         vid = self.normalize_video_id(video_id)
         full_path = self.get_cached_path(vid)
@@ -313,8 +328,21 @@ class PreviewService:
         if quick_path is not None:
             self._emit(progress_callback, 100.0, "Using cached quick preview")
             return quick_path
-        path, _ = self._download_quick(vid, progress_callback, cancel_event)
-        return path
+        return self._download(vid, progress_callback, cancel_event)
+
+    def ensure_full(
+        self,
+        video_id: str,
+        *,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Path:
+        """Download the full track to the cache (no decode); returns its path."""
+        vid = self.normalize_video_id(video_id)
+        cached = self.get_cached_path(vid)
+        if cached is not None:
+            return cached
+        return self._download(vid, progress_callback, cancel_event)
 
     def normalize_video_id(self, video_id: str) -> str:
         return self._normalize_video_id(video_id)
@@ -325,6 +353,11 @@ class PreviewService:
             if p.is_file() and p.suffix.lower() != ".part":
                 return p
         return None
+
+    @classmethod
+    def is_quick_path(cls, path: Path) -> bool:
+        """True for an opening-slice cache file (not the full track)."""
+        return cls._is_quick_cache_path(Path(path))
 
     @staticmethod
     def _is_quick_cache_path(path: Path) -> bool:
@@ -365,6 +398,73 @@ class PreviewService:
 
     # ── Download ──
 
+    def _extracted_info(self, vid: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Unprocessed yt-dlp info for ``vid``, extracted at most once per TTL.
+
+        Extraction (page fetch + player JS + challenge solving in Node) is the
+        slow part of every preview; downloads reuse its result.
+        """
+        import yt_dlp
+
+        now = time.monotonic()
+        with self._info_lock:
+            cached = self._info_cache.get(vid)
+            if cached and not refresh and now - cached[0] < _INFO_TTL_SECONDS:
+                return cached[1]
+        opts: dict[str, Any] = {
+            **youtube_options(), "quiet": True, "no_warnings": False, "logger": self._log,
+            "no_color": True, "noplaylist": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(self._YT_WATCH.format(vid=vid), download=False, process=False)
+        if not info:
+            raise PreviewFetchError("YouTube returned no stream information.")
+        with self._info_lock:
+            self._info_cache[vid] = (now, info)
+            while len(self._info_cache) > _INFO_CACHE_MAX:
+                self._info_cache.pop(next(iter(self._info_cache)))
+        return info
+
+    def _download_with_info(
+        self,
+        vid: str,
+        opts: dict[str, Any],
+        cancel_event: Optional[threading.Event],
+        what: str,
+    ) -> dict[str, Any]:
+        """Download using cached extraction; re-extract once if it went stale."""
+        import yt_dlp
+        from yt_dlp.utils import DownloadError, ExtractorError
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            self._check_cancel(cancel_event)
+            try:
+                # Attempts after the first re-extract: an expired or rejected
+                # stream URL is the usual cause of a failed cached download.
+                info = self._extracted_info(vid, refresh=attempt > 1)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.process_ie_result(copy.deepcopy(info), download=True) or info
+            except PreviewCancelledError:
+                raise
+            except (DownloadError, ExtractorError) as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise PreviewCancelledError("Cancelled by user.") from e
+                last_error = e
+                if attempt < _DOWNLOAD_ATTEMPTS:
+                    self._log.warning("%s attempt %d/%d failed for %s (%s); retrying",
+                                      what, attempt, _DOWNLOAD_ATTEMPTS, vid, e)
+                    if cancel_event is not None:
+                        if cancel_event.wait(_DOWNLOAD_RETRY_DELAY_SECONDS):
+                            raise PreviewCancelledError("Cancelled by user.") from e
+                    else:
+                        time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
+            except PreviewError:
+                raise
+            except Exception as e:
+                raise PreviewFetchError(f"Unexpected {what.lower()} error: {e}") from e
+        raise PreviewFetchError(f"Could not fetch {what.lower()}: {last_error}") from last_error
+
     def _download_quick(
         self,
         vid: str,
@@ -372,8 +472,6 @@ class PreviewService:
         cancel_event: Optional[threading.Event],
     ) -> tuple[Path, Optional[float]]:
         """Download only the opening slice; returns (path, full_duration_hint)."""
-        import yt_dlp
-        from yt_dlp.utils import DownloadError, ExtractorError
 
         duration_hint: Optional[float] = None
         quick_seconds = self._quick_seconds
@@ -412,39 +510,11 @@ class PreviewService:
             "paths": {"home": str(self._cache_dir)},
             "progress_hooks": [hook],
             "download_ranges": ranges_callback,
-            "force_keyframes_at_cuts": True,
+            # No forced keyframe cuts: every AAC/Opus frame is decodable, so a
+            # stream copy is exact enough and avoids a full re-encode.
         }
 
-        url = self._YT_WATCH.format(vid=vid)
-        info = None
-        last_error: Optional[Exception] = None
-        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
-            self._check_cancel(cancel_event)
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                last_error = None
-                break
-            except PreviewCancelledError:
-                raise
-            except (DownloadError, ExtractorError) as e:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise PreviewCancelledError("Cancelled by user.") from e
-                last_error = e
-                if attempt < _DOWNLOAD_ATTEMPTS:
-                    self._log.warning(
-                        "Quick preview attempt %d/%d failed for %s (%s); retrying",
-                        attempt, _DOWNLOAD_ATTEMPTS, vid, e,
-                    )
-                    time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
-            except Exception as e:
-                raise PreviewFetchError(f"Unexpected quick fetch error: {e}") from e
-
-        if last_error is not None:
-            raise PreviewFetchError(
-                f"Could not fetch quick preview: {last_error}"
-            ) from last_error
-
+        info = self._download_with_info(vid, opts, cancel_event, "Quick preview")
         path = self._locate_quick_download(info, vid)
         if path is None:
             raise PreviewFetchError(
@@ -506,8 +576,6 @@ class PreviewService:
         progress_callback: Optional[Callable[[float, str], None]],
         cancel_event: Optional[threading.Event],
     ) -> Path:
-        import yt_dlp
-        from yt_dlp.utils import DownloadError, ExtractorError
 
         def hook(d: dict[str, Any]) -> None:
             if cancel_event is not None and cancel_event.is_set():
@@ -538,40 +606,10 @@ class PreviewService:
             "outtmpl": {"default": str(self._cache_dir / "%(id)s.%(ext)s")},
             "paths": {"home": str(self._cache_dir)},
             "progress_hooks": [hook],
+            "http_chunk_size": _HTTP_CHUNK_SIZE,
         }
 
-        url = self._YT_WATCH.format(vid=vid)
-        info = None
-        last_error: Optional[Exception] = None
-        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
-            self._check_cancel(cancel_event)
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                last_error = None
-                break
-            except PreviewCancelledError:
-                raise
-            except (DownloadError, ExtractorError) as e:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise PreviewCancelledError("Cancelled by user.") from e
-                last_error = e
-                if attempt < _DOWNLOAD_ATTEMPTS:
-                    self._log.warning(
-                        "yt-dlp attempt %d/%d failed for %s (%s); "
-                        "retrying with a fresh stream URL in %.0fs",
-                        attempt, _DOWNLOAD_ATTEMPTS, vid, e,
-                        _DOWNLOAD_RETRY_DELAY_SECONDS,
-                    )
-                    time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS)
-            except Exception as e:  # defensive
-                raise PreviewFetchError(f"Unexpected fetch error: {e}") from e
-
-        if last_error is not None:
-            raise PreviewFetchError(
-                f"Could not fetch preview audio: {last_error}"
-            ) from last_error
-
+        info = self._download_with_info(vid, opts, cancel_event, "Full track")
         path = self._locate_download(info, vid)
         if path is None:
             raise PreviewFetchError("Download completed but no audio file found.")

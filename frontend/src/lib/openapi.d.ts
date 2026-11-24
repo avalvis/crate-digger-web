@@ -399,6 +399,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/listening/plays": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Listen */
+        post: operations["record_listen_api_listening_plays_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/listening/likes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Liked */
+        put: operations["set_liked_api_listening_likes_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/listening": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listening History */
+        get: operations["listening_history_api_listening_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/listening/states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listening States */
+        get: operations["listening_states_api_listening_states_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/discovery/interactions": {
         parameters: {
             query?: never;
@@ -914,6 +982,50 @@ export interface components {
             engine_ready: boolean;
             /** Engine Error */
             engine_error?: string | null;
+        };
+        /** LikeRequest */
+        LikeRequest: {
+            suggestion: components["schemas"]["Suggestion"];
+            /** Liked */
+            liked: boolean;
+        };
+        /** ListeningEntry */
+        ListeningEntry: {
+            suggestion: components["schemas"]["Suggestion"];
+            /** Play Count */
+            play_count: number;
+            /** Liked */
+            liked: boolean;
+            /** First Played At */
+            first_played_at?: string | null;
+            /** Last Played At */
+            last_played_at?: string | null;
+            /** Liked At */
+            liked_at?: string | null;
+        };
+        /** ListeningPage */
+        ListeningPage: {
+            /** Items */
+            items: components["schemas"]["ListeningEntry"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** ListeningRequest */
+        ListeningRequest: {
+            suggestion: components["schemas"]["Suggestion"];
+        };
+        /** ListeningState */
+        ListeningState: {
+            /** Video Id */
+            video_id: string;
+            /** Play Count */
+            play_count: number;
+            /** Liked */
+            liked: boolean;
         };
         /** MpcExportRequest */
         MpcExportRequest: {
@@ -2281,6 +2393,150 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Suggestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_listen_api_listening_plays_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ListeningRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_liked_api_listening_likes_put: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LikeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listening_history_api_listening_get: {
+        parameters: {
+            query?: {
+                filter?: string;
+                limit?: number;
+                offset?: number;
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListeningPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listening_states_api_listening_states_get: {
+        parameters: {
+            query: {
+                video_ids: string;
+                token?: string | null;
+            };
+            header?: {
+                "x-crate-token"?: string | null;
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListeningState"][];
                 };
             };
             /** @description Validation Error */

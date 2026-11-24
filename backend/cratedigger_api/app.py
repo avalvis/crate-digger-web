@@ -44,6 +44,11 @@ from .models import (
     CrateTrackRemoval,
     DiscoveryFilters,
     DiscoveryInteractionRequest,
+    LikeRequest,
+    ListeningEntry,
+    ListeningPage,
+    ListeningRequest,
+    ListeningState,
     DiscoveryRematchRequest,
     DiscoveryResponse,
     ExportRequest,
@@ -475,6 +480,38 @@ def create_app(*, data_dir: Path | None = None, api_token: str | None = None) ->
                 raise _error("no_alternative_source", "No other credible YouTube source was found", 404) from exc
             raise _error("rematch_failed", str(exc), 502) from exc
         return Suggestion(**item)
+
+    @app.post("/api/listening/plays", status_code=204)
+    async def record_listen(payload: ListeningRequest, _: Guard, core: Runtime) -> None:
+        try:
+            await run_in_threadpool(core.record_listen, payload.suggestion.model_dump())
+        except ValueError as exc:
+            raise _error("not_playable", str(exc), 422) from exc
+
+    @app.put("/api/listening/likes", status_code=204)
+    async def set_liked(payload: LikeRequest, _: Guard, core: Runtime) -> None:
+        try:
+            await run_in_threadpool(core.set_liked, payload.suggestion.model_dump(), payload.liked)
+        except ValueError as exc:
+            raise _error("not_playable", str(exc), 422) from exc
+
+    @app.get("/api/listening", response_model=ListeningPage)
+    async def listening_history(
+        _: Guard, core: Runtime,
+        filter: str = Query(default="all", pattern="^(all|liked)$"),
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> ListeningPage:
+        items, total = await run_in_threadpool(
+            lambda: core.listening_history(liked_only=filter == "liked", limit=limit, offset=offset)
+        )
+        return ListeningPage(items=[ListeningEntry(**item) for item in items], total=total, limit=limit, offset=offset)
+
+    @app.get("/api/listening/states", response_model=list[ListeningState])
+    async def listening_states(video_ids: str, _: Guard, core: Runtime) -> list[ListeningState]:
+        ids = [value for value in video_ids.split(",") if re.fullmatch(VIDEO_ID_PATTERN, value)][:100]
+        states = await run_in_threadpool(core.db.listening_states, ids)
+        return [ListeningState(video_id=key, **value) for key, value in states.items()]
 
     @app.post("/api/discovery/interactions", status_code=204)
     async def record_discovery_interaction(

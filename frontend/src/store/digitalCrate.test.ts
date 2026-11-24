@@ -20,15 +20,15 @@ describe('Digital Crate listening session', () => {
     playedVideoIds: [], listenedSeconds: {},
   }))
 
-  it('marks a source played only after ten cumulative seconds of valid playback', () => {
+  it('marks a source played only after three cumulative seconds of valid playback', () => {
     useDigitalCrateStore.getState().applyReel(1, reel(suggestion('1', 'One')))
-    for (let count = 0; count < 9; count += 1) useDigitalCrateStore.getState().recordListening('1', 1)
+    for (let count = 0; count < 2; count += 1) useDigitalCrateStore.getState().recordListening('1', 1)
     useDigitalCrateStore.getState().recordListening('1', 7) // rejected seek-sized jump
-    expect(useDigitalCrateStore.getState()).toMatchObject({ listenedSeconds: { 1: 9 }, playedVideoIds: [] })
+    expect(useDigitalCrateStore.getState()).toMatchObject({ listenedSeconds: { 1: 2 }, playedVideoIds: [] })
 
     useDigitalCrateStore.getState().recordListening('1', 1)
     useDigitalCrateStore.getState().recordListening('1', 1)
-    expect(useDigitalCrateStore.getState()).toMatchObject({ listenedSeconds: { 1: 10 }, playedVideoIds: ['1'] })
+    expect(useDigitalCrateStore.getState()).toMatchObject({ listenedSeconds: { 1: 3 }, playedVideoIds: ['1'] })
   })
 
   it('keeps the first-listened shelf order stable through replays', () => {
@@ -56,7 +56,7 @@ describe('Digital Crate listening session', () => {
     }
     useDigitalCrateStore.getState().replaceSource(1, suggestion('9', 'Better One'))
     expect(useDigitalCrateStore.getState().playedVideoIds).toEqual(['2'])
-    expect(useDigitalCrateStore.getState().listenedSeconds).toEqual({ 2: 10 })
+    expect(useDigitalCrateStore.getState().listenedSeconds).toEqual({ 2: 3 })
     expect(useDigitalCrateStore.getState().items.map((item) => item.youtube_video_id)).toEqual(['9', '2'])
   })
 })

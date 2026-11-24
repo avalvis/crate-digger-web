@@ -185,6 +185,12 @@ export const api = {
   deleteJobHistory: () => request<{ affected: number }>('/api/jobs/history', { method: 'DELETE' }),
   dig: (values: Record<string, unknown>) =>
     request<DiscoveryResponse>('/api/discovery/dig', { method: 'POST', body: JSON.stringify(values) }, 180_000),
+  recordListen: (suggestion: import('./types').Suggestion) =>
+    request<void>('/api/listening/plays', { method: 'POST', body: JSON.stringify({ suggestion }) }),
+  setLiked: (suggestion: import('./types').Suggestion, liked: boolean) =>
+    request<void>('/api/listening/likes', { method: 'PUT', body: JSON.stringify({ suggestion, liked }) }),
+  listening: (filter: 'all' | 'liked', limit = 200) =>
+    request<import('./types').ListeningPage>(`/api/listening?filter=${filter}&limit=${limit}`),
   cancelDig: () => request<{ affected: number }>('/api/discovery/dig', { method: 'DELETE' }),
   rematch: (suggestion: import('./types').Suggestion, excludeVideoIds: string[]) =>
     request<import('./types').Suggestion>('/api/discovery/rematch', {

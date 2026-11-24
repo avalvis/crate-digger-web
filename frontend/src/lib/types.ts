@@ -89,6 +89,22 @@ export interface Suggestion {
 
 export interface DiscoveryResponse { items: Suggestion[]; demo: boolean; message: string | null }
 export type DiscoveryInteraction = 'preview' | 'queue' | 'mpc'
+
+export interface ListeningEntry {
+  suggestion: Suggestion
+  play_count: number
+  liked: boolean
+  first_played_at: string | null
+  last_played_at: string | null
+  liked_at: string | null
+}
+
+export interface ListeningPage {
+  items: ListeningEntry[]
+  total: number
+  limit: number
+  offset: number
+}
 export type MpcExportMode = 'song' | 'stems' | 'both'
 
 export interface MpcJob {

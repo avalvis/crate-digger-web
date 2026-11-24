@@ -147,6 +147,13 @@ class EngineRuntime:
         self._mpc_manager: Any = None
         self._media_error: str | None = None
         self._preview_paths: dict[str, Path] = {}
+        # Background full-track downloads started when a preview plays, so
+        # "Full track" is usually ready by the time it is clicked.
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._full_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="full-track")
+        self._full_downloads: dict[str, Any] = {}
+        self._peaks_cache: dict[str, tuple[list[float], float]] = {}
         self.tools = ToolManager(
             self.data_dir, channel=lambda: self.config.snapshot().config.downloader.update_channel,
         )
@@ -160,6 +167,7 @@ class EngineRuntime:
         return self._media_error
 
     def close(self) -> None:
+        self._full_executor.shutdown(wait=False, cancel_futures=True)
         self.tools.close()
         if self._mpc_manager is not None:
             self._mpc_manager.shutdown(cancel_pending=True)
@@ -248,8 +256,12 @@ class EngineRuntime:
                 self._preview.clear_stale_cache(max_age_days=14)
                 self._preview_prefetch = PreviewPrefetchService(
                     self._preview,
-                    max_workers=1,
-                    keep_decoded=True,
+                    # Warm-up only downloads; the web player streams the file,
+                    # so decoding PCM here just burned CPU. Each download
+                    # mostly waits (YouTube's required pre-download delay),
+                    # so three in parallel warm a reel about 3x faster.
+                    max_workers=3,
+                    keep_decoded=False,
                     logger=self.log.getChild("preview_prefetch"),
                 )
                 self._preview_prefetch.subscribe(self._publish_preview_event, weak=False)
@@ -457,6 +469,38 @@ class EngineRuntime:
         if action in {"queue", "mpc"}:
             self.db.mark_discovery_queued(suggestion.discogs_master_id)
 
+    @staticmethod
+    def _listening_key(values: dict[str, Any]) -> tuple[str, int, str]:
+        import json
+
+        video_id = str(values.get("youtube_video_id") or "").strip()
+        if not video_id:
+            raise ValueError("This record has no playable source")
+        return video_id, int(values["discogs_master_id"]), json.dumps(values, ensure_ascii=False)
+
+    def record_listen(self, values: dict[str, Any]) -> None:
+        self.db.record_listen(*self._listening_key(values))
+
+    def set_liked(self, values: dict[str, Any], liked: bool) -> None:
+        self.db.set_listen_liked(*self._listening_key(values), liked)
+
+    def listening_history(self, *, liked_only: bool, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
+        import json
+
+        rows, total = self.db.list_listening_history(liked_only=liked_only, limit=limit, offset=offset)
+        items = []
+        for row in rows:
+            try:
+                suggestion = json.loads(row["suggestion_json"])
+            except ValueError:
+                continue
+            items.append({
+                "suggestion": suggestion, "play_count": row["play_count"], "liked": bool(row["liked"]),
+                "first_played_at": row["first_played_at"], "last_played_at": row["last_played_at"],
+                "liked_at": row["liked_at"],
+            })
+        return items, total
+
     def _mpc_job_payload(self, job_id: str) -> dict[str, Any] | None:
         if self._mpc_manager is None:
             return None
@@ -530,28 +574,79 @@ class EngineRuntime:
         return self._preview_prefetch.get_status(video_ids)
 
     def create_preview(self, video_id: str, mode: str = "quick") -> dict[str, Any]:
+        """Make audio for the player available and return its waveform.
+
+        Audio is streamed from the cached file, so nothing is decoded for
+        playback; peaks come from a cheap low-rate mono decode.
+        """
         self.ensure_media_engine()
+        vid = self._preview.normalize_video_id(video_id)
         if mode == "full":
-            self._preview_prefetch.prioritize(video_id)
-            self._preview_prefetch.wait_ready(video_id, timeout=90)
-            data = self._preview.fetch(video_id)
+            source = self._full_track(vid)
         else:
-            data = self._preview_prefetch.get_decoded(video_id)
-            if data is None:
-                self._preview_prefetch.prioritize(video_id)
-                data = self._preview_prefetch.wait_ready(video_id, timeout=90)
-            if data is None:
-                data = self._preview.fetch_quick(video_id)
-        if data.source_path is None:
-            raise RuntimeUnavailable("Preview audio was not cached")
-        self._preview_paths[video_id] = data.source_path
+            # A cached full file is better than a slice: return the whole track.
+            source = self._preview.get_cached_path(vid) or self._preview.get_quick_cached_path(vid)
+            if source is None:
+                self._preview_prefetch.prioritize(vid)
+                self._preview_prefetch.wait_ready(vid, timeout=90)
+                source = self._preview.get_quick_cached_path(vid) or self._preview.warm_cache(vid)
+            if self._preview.is_quick_path(source):
+                self._prefetch_full(vid)
+        partial = self._preview.is_quick_path(source)
+        peaks, duration = self._peaks(source)
+        self._preview_paths[vid] = source
         return {
-            "video_id": video_id,
-            "audio_url": f"/api/previews/{video_id}/audio",
-            "peaks": [round(float(value), 5) for value in data.peaks],
-            "duration_seconds": data.duration_seconds,
-            "partial": data.is_partial,
+            "video_id": vid,
+            "audio_url": f"/api/previews/{vid}/audio",
+            "peaks": peaks,
+            "duration_seconds": duration,
+            "partial": partial,
         }
+
+    def _peaks(self, source: Path) -> tuple[list[float], float]:
+        key = str(source)
+        cached = self._peaks_cache.get(key)
+        if cached is None:
+            values, duration = self._preview.peaks_for_file(source)
+            cached = ([round(float(value), 5) for value in values], duration)
+            self._peaks_cache[key] = cached
+            while len(self._peaks_cache) > 128:
+                self._peaks_cache.pop(next(iter(self._peaks_cache)))
+        return cached
+
+    def _prefetch_full(self, vid: str) -> None:
+        """Start downloading the full track in the background (one at a time)."""
+        with self._lock:
+            if vid in self._full_downloads:
+                return
+            # Only the track being listened to matters: drop queued ones.
+            for other, future in list(self._full_downloads.items()):
+                if future.cancel():
+                    self._full_downloads.pop(other, None)
+            future = self._full_executor.submit(self._preview.ensure_full, vid)
+            self._full_downloads[vid] = future
+
+        def done(finished: Any, key: str = vid) -> None:
+            with self._lock:
+                if self._full_downloads.get(key) is finished:
+                    self._full_downloads.pop(key, None)
+            if not finished.cancelled() and finished.exception() is not None:
+                self.log.info("Background full-track download failed for %s: %s", key, finished.exception())
+
+        future.add_done_callback(done)
+
+    def _full_track(self, vid: str) -> Path:
+        cached = self._preview.get_cached_path(vid)
+        if cached is not None:
+            return cached
+        with self._lock:
+            pending = self._full_downloads.get(vid)
+        if pending is not None and not pending.cancelled():
+            try:
+                return pending.result(timeout=300)
+            except Exception:
+                pass  # fall through to a direct attempt with its own error
+        return self._preview.ensure_full(vid)
 
     def preview_path(self, video_id: str) -> Path | None:
         path = self._preview_paths.get(video_id)

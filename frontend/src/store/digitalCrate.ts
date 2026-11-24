@@ -1,8 +1,12 @@
 import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import type { DiscoveryResponse, MpcJob, PreviewPrefetchItem, Suggestion } from '../lib/types'
 
 export type ProducerProfile = 'boom_bap' | 'lofi' | 'global' | 'cinematic'
 export type CrateView = 'list' | 'grid'
+
+/** Seconds of genuine listening before a record counts as played. */
+export const PLAYED_AFTER_SECONDS = 3
 
 interface DigitalCrateState {
   profile: ProducerProfile
@@ -22,6 +26,9 @@ interface DigitalCrateState {
   mpcJobs: Record<string, MpcJob>
   playedVideoIds: string[]
   listenedSeconds: Record<string, number>
+  /** Records you marked to keep (by YouTube video id). */
+  likedVideoIds: string[]
+  setLiked: (videoId: string, liked: boolean) => void
   /** Live status line streamed from the backend while a dig runs. */
   digStatus: string | null
   setDigStatus: (value: string | null) => void
@@ -43,7 +50,7 @@ interface DigitalCrateState {
   updatePreview: (item: PreviewPrefetchItem) => void
 }
 
-export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
+export const useDigitalCrateStore = create<DigitalCrateState>()(persist((set) => ({
   profile: 'boom_bap',
   era: 0,
   country: '',
@@ -61,6 +68,12 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
   mpcJobs: {},
   playedVideoIds: [],
   listenedSeconds: {},
+  likedVideoIds: [],
+  setLiked: (videoId, liked) => set((state) => ({
+    likedVideoIds: liked
+      ? Array.from(new Set([...state.likedVideoIds, videoId]))
+      : state.likedVideoIds.filter((value) => value !== videoId),
+  })),
   digStatus: null,
   setDigStatus: (digStatus) => set({ digStatus }),
   setProfile: (profile) => set({ profile }),
@@ -96,12 +109,11 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
   }),
   recordListening: (videoId, seconds) => set((state) => {
     if (!videoId || !Number.isFinite(seconds) || seconds <= 0 || seconds > 2) return state
-    if (!state.items.some((item) => item.youtube_video_id === videoId)) return state
     if (state.playedVideoIds.includes(videoId)) return state
-    const total = Math.min(10, (state.listenedSeconds[videoId] || 0) + seconds)
+    const total = Math.min(PLAYED_AFTER_SECONDS, (state.listenedSeconds[videoId] || 0) + seconds)
     return {
       listenedSeconds: { ...state.listenedSeconds, [videoId]: total },
-      playedVideoIds: total >= 10 ? [...state.playedVideoIds, videoId] : state.playedVideoIds,
+      playedVideoIds: total >= PLAYED_AFTER_SECONDS ? [...state.playedVideoIds, videoId] : state.playedVideoIds,
     }
   }),
   rejectSource: (masterId, videoId) => set((state) => ({
@@ -128,4 +140,17 @@ export const useDigitalCrateStore = create<DigitalCrateState>((set) => ({
   updatePreview: (item) => set((state) => ({
     previewStates: { ...state.previewStates, [item.video_id]: item },
   })),
+}), {
+  // The reel, what you played and what you kept survive restarts. Transient
+  // state (preview progress, in-flight digs and rematches) does not.
+  name: 'cratedigger.digitalCrate',
+  version: 1,
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({
+    profile: state.profile, era: state.era, country: state.country, genre: state.genre, view: state.view,
+    items: state.items, message: state.message, demo: state.demo,
+    digRun: state.appliedRun, appliedRun: state.appliedRun,
+    rejectedSources: state.rejectedSources, lockedSources: state.lockedSources,
+    playedVideoIds: state.playedVideoIds, listenedSeconds: state.listenedSeconds, likedVideoIds: state.likedVideoIds,
+  }),
 }))

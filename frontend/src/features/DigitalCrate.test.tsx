@@ -125,7 +125,7 @@ describe('DigitalCrate startup', () => {
 
     expect(await screen.findByRole('heading', { name: 'Two' })).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Up next' })).getByText('Three')).toBeInTheDocument()
-    expect(within(screen.getByRole('region', { name: 'Played this session' })).getByRole('button', { name: 'Replay Artist — One' })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Played from this crate' })).getByRole('button', { name: 'Replay Artist — One' })).toBeInTheDocument()
     expect(screen.getByText(/NOW PLAYING · 2 OF 3/)).toBeInTheDocument()
   })
 
@@ -139,7 +139,7 @@ describe('DigitalCrate startup', () => {
     renderCrate()
 
     expect(await screen.findByText('Crate auditioned')).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Played this session' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Played from this crate' })).toBeInTheDocument()
   })
 
   it('scrolls an off-screen hero into view for a new selection, but not for pause or resume', async () => {

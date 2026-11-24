@@ -37,6 +37,8 @@ export const apiContract: {
   PreviewResponse: SameFields<Client.PreviewResponse, Schemas['PreviewResponse']>
   PreviewPrefetchItem: SameFields<Client.PreviewPrefetchItem, Schemas['PreviewPrefetchItem']>
   PreviewPrefetchResponse: SameFields<Client.PreviewPrefetchResponse, Schemas['PreviewPrefetchResponse']>
+  ListeningEntry: SameFields<Client.ListeningEntry, Schemas['ListeningEntry']>
+  ListeningPage: SameFields<Client.ListeningPage, Schemas['ListeningPage']>
 } = {
   Track: true,
   TrackPage: true,
@@ -57,4 +59,6 @@ export const apiContract: {
   PreviewResponse: true,
   PreviewPrefetchItem: true,
   PreviewPrefetchResponse: true,
+  ListeningEntry: true,
+  ListeningPage: true,
 }

@@ -186,6 +186,37 @@ class DiscoveryInteractionRequest(ApiModel):
     action: Literal["preview", "queue", "mpc"]
 
 
+class ListeningRequest(ApiModel):
+    suggestion: Suggestion
+
+
+class LikeRequest(ApiModel):
+    suggestion: Suggestion
+    liked: bool
+
+
+class ListeningEntry(ApiModel):
+    suggestion: Suggestion
+    play_count: int
+    liked: bool
+    first_played_at: str | None = None
+    last_played_at: str | None = None
+    liked_at: str | None = None
+
+
+class ListeningPage(ApiModel):
+    items: list[ListeningEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+class ListeningState(ApiModel):
+    video_id: str
+    play_count: int
+    liked: bool
+
+
 class MpcExportRequest(ApiModel):
     suggestion: Suggestion
     mode: Literal["song", "stems", "both"] = "both"

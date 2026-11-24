@@ -40,3 +40,7 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Built installers copied to the root by build-installer.ps1
+/CrateDigger-*-Setup.exe
+/CrateDigger-*.msi

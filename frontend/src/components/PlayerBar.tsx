@@ -136,7 +136,13 @@ export function PlayerBar({ onQueue }: { onQueue: () => void }) {
         listened > 0 && state.playing && !state.preparing
         && state.track?.id === track.id && track.videoId && track.discoverySuggestion
       ) {
-        useDigitalCrateStore.getState().recordListening(track.videoId, listened)
+        const crate = useDigitalCrateStore.getState()
+        const wasPlayed = crate.playedVideoIds.includes(track.videoId)
+        crate.recordListening(track.videoId, listened)
+        // Persist the play once it counts, so History remembers it.
+        if (!wasPlayed && useDigitalCrateStore.getState().playedVideoIds.includes(track.videoId)) {
+          api.recordListen(track.discoverySuggestion).catch(() => undefined)
+        }
       }
       previousMediaSeconds = seconds
       previousWallMs = now

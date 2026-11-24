@@ -176,6 +176,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_master
 CREATE INDEX IF NOT EXISTS idx_discovery_suggested
     ON discovery_history(suggested_at DESC);
 
+-- Records the user auditioned (or kept) in Digital Crate, with the full
+-- suggestion so they can be replayed, queued or exported later.
+CREATE TABLE IF NOT EXISTS listening_history (
+    video_id            TEXT    PRIMARY KEY,
+    discogs_master_id   INTEGER NOT NULL,
+    suggestion_json     TEXT    NOT NULL,
+    play_count          INTEGER NOT NULL DEFAULT 0,
+    first_played_at     TEXT,
+    last_played_at      TEXT,
+    liked               INTEGER NOT NULL DEFAULT 0 CHECK (liked IN (0,1)),
+    liked_at            TEXT,
+    updated_at          TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_listening_updated ON listening_history(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listening_liked   ON listening_history(liked, liked_at DESC);
+
 CREATE TABLE IF NOT EXISTS mpc_exports (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     track_id            INTEGER NOT NULL,
@@ -1266,6 +1283,72 @@ class VaultDatabase:
                 "ORDER BY COALESCE(started_at, created_at) LIMIT 1"
             ).fetchone()
         return counts, pending, (int(current["id"]) if current else None)
+
+    # ─── Listening history ──────────────────────────────────────────
+
+    def record_listen(self, video_id: str, master_id: int, suggestion_json: str) -> None:
+        """Count one audition of a Digital Crate record."""
+        now = _utc_now_iso()
+        with self._writing() as conn:
+            conn.execute(
+                """
+                INSERT INTO listening_history (video_id, discogs_master_id, suggestion_json,
+                    play_count, first_played_at, last_played_at, updated_at)
+                VALUES (?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    suggestion_json = excluded.suggestion_json,
+                    play_count      = listening_history.play_count + 1,
+                    first_played_at = COALESCE(listening_history.first_played_at, excluded.first_played_at),
+                    last_played_at  = excluded.last_played_at,
+                    updated_at      = excluded.updated_at
+                """,
+                (video_id, master_id, suggestion_json, now, now, now),
+            )
+
+    def set_listen_liked(self, video_id: str, master_id: int, suggestion_json: str, liked: bool) -> None:
+        """Keep (or un-keep) a record; works before it was ever played."""
+        now = _utc_now_iso()
+        with self._writing() as conn:
+            conn.execute(
+                """
+                INSERT INTO listening_history (video_id, discogs_master_id, suggestion_json,
+                    liked, liked_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    suggestion_json = excluded.suggestion_json,
+                    liked           = excluded.liked,
+                    liked_at        = excluded.liked_at,
+                    updated_at      = excluded.updated_at
+                """,
+                (video_id, master_id, suggestion_json, int(liked), now if liked else None, now),
+            )
+
+    def list_listening_history(
+        self, *, liked_only: bool = False, limit: int = 100, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Most recent first. Returns (rows, total)."""
+        where = "WHERE liked = 1" if liked_only else ""
+        order = "liked_at DESC" if liked_only else "COALESCE(last_played_at, liked_at, updated_at) DESC"
+        with self._reading() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM listening_history {where}").fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM listening_history {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                (int(limit), int(offset)),
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def listening_states(self, video_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Play count and kept flag for the given videos (absent = never heard)."""
+        ids = [value for value in dict.fromkeys(video_ids) if value]
+        if not ids:
+            return {}
+        with self._reading() as conn:
+            rows = conn.execute(
+                f"SELECT video_id, play_count, liked FROM listening_history "
+                f"WHERE video_id IN ({','.join('?' for _ in ids)})",
+                ids,
+            ).fetchall()
+        return {row["video_id"]: {"play_count": int(row["play_count"]), "liked": bool(row["liked"])} for row in rows}
 
     def find_unfinished_job(self, source_url: str) -> Optional[int]:
         """Id of a pending or running job for ``source_url``, if any."""
