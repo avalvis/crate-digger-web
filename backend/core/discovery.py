@@ -299,6 +299,15 @@ class DiscoveryEngine:
     MAX_YT_MATCH_ATTEMPTS = 10
     # Concurrent YouTube Music lookups per window (still rate-limited).
     YTM_MATCH_PARALLELISM = 4
+    # Once credible matches can fill the reel, spend at most this many extra
+    # candidates / seconds hunting for more varied ones (artist, country and
+    # lane caps), then fill from the set-aside matches. Without this a reel
+    # whose later matches all repeat an artist or lane walked the whole pool
+    # (100+ rate-limited searches) and timed out.
+    DIVERSITY_EXTRA_ATTEMPTS = 2  # x count
+    DIVERSITY_EXTRA_SECONDS = 45.0
+    # Whatever happens, finish with what we have well inside the UI's limit.
+    DIG_HARD_BUDGET_SECONDS = 140.0
     MIN_YT_MATCH_SCORE = 0.55
 
     # A filterless dig is a portfolio, not one random genre. Each request
@@ -508,6 +517,7 @@ class DiscoveryEngine:
             )
 
         count = max(1, int(count))
+        dig_started = time.monotonic()
         self._log.info("Dig (batch of %d) started: %s", count, filters)
         self._emit_progress(progress, "Searching Discogs…")
 
@@ -555,13 +565,28 @@ class DiscoveryEngine:
         attempts = pool[:max_attempts]
         window = self.YTM_MATCH_PARALLELISM
         with ThreadPoolExecutor(max_workers=window, thread_name_prefix="ytm-match") as executor:
+            reel_fillable_at: Optional[tuple[int, float]] = None
             for offset in range(0, len(attempts), window):
                 self._check_cancel(cancel_event)
                 if len(suggestions) >= count:
                     break
+                now = time.monotonic()
+                if reel_fillable_at is None and len(suggestions) + len(deferred_suggestions) >= count:
+                    reel_fillable_at = (offset, now)
+                if reel_fillable_at is not None and (
+                    offset - reel_fillable_at[0] >= count * self.DIVERSITY_EXTRA_ATTEMPTS
+                    or now - reel_fillable_at[1] >= self.DIVERSITY_EXTRA_SECONDS
+                ):
+                    self._log.info("Filling the reel from set-aside matches after a bounded variety search")
+                    break
+                if (suggestions or deferred_suggestions) and now - dig_started >= self.DIG_HARD_BUDGET_SECONDS:
+                    self._log.warning("Dig time budget reached; returning %d match(es)",
+                                      len(suggestions) + len(deferred_suggestions))
+                    break
                 self._emit_progress(
                     progress,
-                    f"Matching on YouTube — {len(suggestions)}/{count}…",
+                    f"Matching on YouTube — {len(suggestions)}/{count}…"
+                    if reel_fillable_at is None else "Balancing the reel for variety…",
                 )
                 batch = attempts[offset:offset + window]
                 futures = [executor.submit(self._match_youtube, cand) for cand in batch]

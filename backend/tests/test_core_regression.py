@@ -243,3 +243,44 @@ def test_interacted_discovery_is_excluded_by_a_new_engine(tmp_path: Path) -> Non
 
     assert [item.master_id for item in ranked] == [43]
     assert no_repeats == []
+
+
+def test_reel_stops_hunting_for_variety_once_it_can_be_filled(tmp_path: Path, monkeypatch) -> None:
+    """Regression: later matches that all repeat an artist used to walk the
+    whole pool (100+ rate-limited searches) and time out the dig."""
+    db = VaultDatabase(tmp_path / "vault.db")
+    engine = DiscoveryEngine(db, "test-token")
+
+    def candidate(master_id: int) -> DiscogsCandidate:
+        # The first five are distinct artists; every later one repeats artist 0.
+        artist = f"Artist {master_id}" if master_id < 5 else "Artist 0"
+        return DiscogsCandidate(
+            master_id=master_id, release_id=master_id, artist=artist, title=f"Record {master_id}",
+            year=1972, country="US", genres=("Jazz",), styles=(f"Style {master_id}",),
+            formats=("Vinyl",), have=50, want=100,
+        )
+
+    pool = [candidate(index) for index in range(240)]
+    monkeypatch.setattr(engine, "_search_discogs", lambda *_args, **_kwargs: pool)
+    monkeypatch.setattr(engine, "_rank_and_shuffle", lambda *_args, **_kwargs: pool)
+    monkeypatch.setattr(engine, "_diversify_candidate_pool", lambda candidates, *_args, **_kwargs: candidates)
+    matched: list[int] = []
+
+    def match(cand: DiscogsCandidate) -> DiscoverySuggestion:
+        matched.append(cand.master_id)
+        return DiscoverySuggestion(
+            discogs_master_id=cand.master_id, discogs_release_id=cand.release_id,
+            artist=cand.artist, title=cand.title, year=cand.year, country=cand.country,
+            genre="Jazz", style=cand.styles[0],
+            youtube_url=f"https://youtube.com/watch?v=gem{cand.master_id}",
+            youtube_video_id=f"gem{cand.master_id}", youtube_title=cand.title,
+            youtube_duration_seconds=180, match_score=.95, sample_score=.9, sample_reasons=(),
+        )
+
+    monkeypatch.setattr(engine, "_match_youtube", match)
+    reel = engine.dig_many(DiscoveryFilters(), count=8)
+    db.close()
+
+    assert len(reel) == 8
+    # Bounded: roughly the reel plus the variety budget, not the 120-record walk.
+    assert len(matched) <= 8 + 8 * DiscoveryEngine.DIVERSITY_EXTRA_ATTEMPTS + 2 * DiscoveryEngine.YTM_MATCH_PARALLELISM
